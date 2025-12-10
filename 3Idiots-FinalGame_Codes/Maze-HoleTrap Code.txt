@@ -1,0 +1,41 @@
+using Godot;
+using System;
+
+// This script should be attached to an Area2D node
+public partial class BlackHoleTrap : Area2D
+{
+	// Define the group the player is in, based on the Greyrat.cs script
+	private const string PlayerGroup = "player"; 
+
+	public override void _Ready()
+	{
+		// Connect the signal that fires when a body enters this area
+		BodyEntered += OnBodyEntered;
+	}
+
+	/// <summary>
+	/// Called when a physics body (like CharacterBody2D) enters the area.
+	/// </summary>
+	private void OnBodyEntered(Node2D body)
+	{
+		// 1. Check if the body is the player
+		if (body.IsInGroup(PlayerGroup))
+		{
+			// Try to cast the body to your player type
+			CharacterNode player = body as CharacterNode;
+			
+			if (player != null)
+			{
+				GD.Print("Player fell into black hole! Instant death.");
+				
+				// 2. Kill the player instantly. 
+				// We assume your CharacterNode has a TakeDamage function that can handle large damage.
+				// A health system of hearts usually maxes at 4 or 5, so 999 is instant death.
+				player.TakeDamage(999);
+				
+				// Optional: Remove the hole after stepping on it (useful if you don't want continuous damage)
+				// QueueFree(); 
+			}
+		}
+	}
+}

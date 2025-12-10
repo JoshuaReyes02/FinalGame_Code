@@ -1,0 +1,156 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+
+public partial class Level2 : Node2D // Change Node2D if your root node is a different type (e.g., Node)
+{
+	private const string PlayerGroupName = "player";
+	private const string SpawnMarkerName = "Level2_Spawn";
+	
+	// --- Dust Particle Constants ---
+	private const int DUST_COUNT = 50;              
+	private const float DUST_DURATION_MIN = 10.0f;  
+	private const float DUST_DURATION_MAX = 20.0f;  
+	private const float DUST_OPACITY = 0.3f;        
+	private const float DUST_SCALE_MIN = 1.5f;      
+	private const float DUST_SCALE_MAX = 2.5f;      
+	
+	private RandomNumberGenerator _rng = new RandomNumberGenerator();
+	private Vector2 _viewportSize;
+
+	public override void _Ready()
+	{
+		GD.Print("Level 2 Loaded. Attempting to spawn player...");
+		
+		_rng.Seed = (ulong)DateTime.Now.Ticks;
+		_viewportSize = GetViewportRect().Size;
+		
+		// 1. --- Player Spawning Logic ---
+		SpawnPlayer();
+
+		// 2. --- Ambient Dust Particle Logic ---
+		CreateAmbientDust();
+	}
+
+	/// <summary>
+	/// Handles finding the player and spawning them at the designated marker.
+	/// </summary>
+	private void SpawnPlayer()
+	{
+		Node2D player = null; 
+
+		// Find the player node (named "CharacterNode")
+		foreach (Node node in GetTree().Root.GetChildren())
+		{
+			if (node.IsInGroup(PlayerGroupName) && node.Name == "CharacterNode" && node is Node2D playerNode)
+			{
+				player = playerNode;
+				break;
+			}
+		}
+
+		if (player == null)
+		{
+			GD.PrintErr("Could not find player in the scene tree!");
+			return;
+		}
+
+		// Find the spawn point in Level 2
+		var spawnPoint = GetNodeOrNull<Marker2D>(SpawnMarkerName);
+
+		if (spawnPoint != null)
+		{
+			// Teleport the player to the spawn point's global position
+			player.GlobalPosition = spawnPoint.GlobalPosition;
+			GD.Print($"Player successfully spawned at: {player.GlobalPosition}");
+		}
+		else
+		{
+			GD.PrintErr($"Could not find spawn marker: {SpawnMarkerName}. Player may be stuck at (0, 0).");
+		}
+	}
+
+	/// <summary>
+	/// Creates and animates TextureRect nodes to simulate floating dust particles.
+	/// </summary>
+	private void CreateAmbientDust()
+	{
+		// 1. Create the base texture (a small white square/dot)
+		Image image = Image.CreateEmpty(4, 4, false, Image.Format.Rgba8);
+		image.Fill(new Color(1.0f, 1.0f, 1.0f)); 
+		ImageTexture texture = ImageTexture.CreateFromImage(image);
+
+		// 2. Create the CanvasLayer for organization (ensures dust covers the screen)
+		CanvasLayer dustLayer = new CanvasLayer();
+		dustLayer.Name = "AmbientDustLayer";
+		dustLayer.Layer = 100; // Draw on top of everything
+		AddChild(dustLayer);
+
+		// 3. Generate and animate the individual dust nodes
+		for (int i = 0; i < DUST_COUNT; i++)
+		{
+			TextureRect dustNode = CreateDustNode(texture);
+			dustLayer.AddChild(dustNode); 
+			StartDustAnimation(dustNode);
+		}
+		
+		GD.Print($"Created and started animation for {DUST_COUNT} ambient dust specks in Level 2.");
+	}
+
+	/// <summary>
+	/// Creates a single TextureRect configured as a dust speck.
+	/// </summary>
+	private TextureRect CreateDustNode(Texture2D texture)
+	{
+		TextureRect rect = new TextureRect();
+		rect.Texture = texture;
+		rect.Modulate = new Color(1, 1, 1, DUST_OPACITY); // Set opacity
+		rect.ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize;
+		rect.CustomMinimumSize = new Vector2(4, 4);
+		
+		// Randomize position and scale
+		float randomScale = _rng.RandfRange(DUST_SCALE_MIN, DUST_SCALE_MAX);
+		rect.Scale = new Vector2(randomScale, randomScale);
+		
+		// Initial position is randomized across the whole viewport
+		float startX = _rng.RandfRange(0, _viewportSize.X);
+		float startY = _rng.RandfRange(0, _viewportSize.Y);
+		rect.Position = new Vector2(startX, startY);
+		
+		return rect;
+	}
+
+	/// <summary>
+	/// Uses Tween to create an infinite, looping, slow drift (traveling) animation for the dust.
+	/// </summary>
+	private void StartDustAnimation(TextureRect dustNode)
+	{
+		// Create a new Tween for this specific dust node
+		Tween tween = dustNode.CreateTween();
+		
+		// Set the tween to loop indefinitely
+		tween.SetLoops();
+
+		// Calculate random duration and offset for the drift (traveling)
+		float duration = _rng.RandfRange(DUST_DURATION_MIN, DUST_DURATION_MAX);
+		
+		// Calculate a subtle drift target position (100-200 pixels movement)
+		Vector2 driftOffset = new Vector2(
+			_rng.RandfRange(-150, 150),
+			_rng.RandfRange(-100, 100)
+		);
+		
+		Vector2 initialPos = dustNode.Position;
+		Vector2 targetPos = initialPos + driftOffset;
+
+		// Phase 1: Drift to the target position
+		tween.TweenProperty(dustNode, "position", targetPos, duration)
+			.SetEase(Tween.EaseType.InOut)
+			.SetTrans(Tween.TransitionType.Sine);
+			
+		// Phase 2: Drift back to the initial position
+		tween.TweenProperty(dustNode, "position", initialPos, duration)
+			.SetEase(Tween.EaseType.InOut)
+			.SetTrans(Tween.TransitionType.Sine);
+	}
+}

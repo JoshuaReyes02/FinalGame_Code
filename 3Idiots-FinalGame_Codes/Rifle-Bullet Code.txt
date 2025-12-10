@@ -1,0 +1,49 @@
+using Godot;
+using System;
+
+/// <summary>
+/// Defines the behavior and stats for the Rifle projectile.
+/// Note: This must be attached to your 'rifle_bullet.tscn' scene.
+/// </summary>
+public partial class RifleBullet : Area2D
+{
+	// Higher stats for the rifle
+	[Export] public float Speed { get; set; } = 950f; // Faster than pistol (800f)
+	[Export] public int Damage { get; set; } = 15;    // Higher damage
+	[Export] public float Lifetime { get; set; } = 2.0f;  // Slightly shorter range (due to speed)
+
+	public Vector2 Direction { get; set; } = Vector2.Right;
+
+	private SceneTreeTimer _lifetimeTimer;
+
+	public override void _Ready()
+	{
+		BodyEntered += OnBodyEntered;
+		
+		_lifetimeTimer = GetTree().CreateTimer(Lifetime);
+		_lifetimeTimer.Timeout += QueueFree; 
+	}
+
+	public override void _PhysicsProcess(double delta)
+	{
+		Position += Direction * Speed * (float)delta;
+	}
+
+	private void OnBodyEntered(Node2D body)
+	{
+		// 1. Player exclusion
+		if (body.IsInGroup("player"))
+		{
+			return; 
+		}
+		
+		// 2. Inflict damage
+		if (body.HasMethod("TakeDamage"))
+		{
+			body.Call("TakeDamage", Damage); 
+		}
+
+		// 3. Destroy bullet
+		QueueFree();
+	}
+}

@@ -1,0 +1,192 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+
+public partial class Level3 : Node2D // Change Node2D if your root node is a different type (e.g., Node)
+{
+	private const string PlayerGroupName = "player";
+	private const string SpawnMarkerName = "Level3_Spawn";
+	
+	// --- Falling Rock Constants (Increased Size and Opacity) ---
+	private const int DEBRIS_COUNT = 60;                
+	private const float FALL_SPEED_MIN = 200.0f;        
+	private const float FALL_SPEED_MAX = 400.0f;        
+	private const float DEBRIS_OPACITY = 0.7f;          // INCREASED OPACITY (from 0.5 to 0.7)
+	private const float DEBRIS_SIZE_MIN = 5.0f;         // INCREASED MIN SIZE (from 3.0 to 5.0)
+	private const float DEBRIS_SIZE_MAX = 8.0f;         // INCREASED MAX SIZE (from 5.0 to 8.0)
+	private const float DEBRIS_COLOR_VALUE = 0.4f;      
+	
+	private RandomNumberGenerator _rng = new RandomNumberGenerator();
+	private Vector2 _viewportSize;
+
+	// Structure to hold particle data (position, size, speed)
+	private struct RockParticle
+	{
+		public Vector2 Position;
+		public float Size;
+		public float Speed;
+	}
+
+	// List to store the data for all particles
+	private List<RockParticle> _particles = new List<RockParticle>();
+	
+	// A special Node2D responsible only for drawing the particles
+	private Node2D _drawingNode;
+
+	public override void _Ready()
+	{
+		GD.Print("Level 3 Loaded. Attempting to spawn player...");
+		
+		_rng.Seed = (ulong)DateTime.Now.Ticks;
+		_viewportSize = GetViewportRect().Size;
+		
+		// 1. --- Player Spawning Logic ---
+		SpawnPlayer();
+
+		// 2. --- Falling Rock Particle Logic ---
+		InitializeFallingRocks();
+	}
+	
+	// --- Manual movement and drawing are handled in _Process and _Draw ---
+	public override void _Process(double delta)
+	{
+		// 1. Update Particle Positions
+		for (int i = 0; i < _particles.Count; i++)
+		{
+			RockParticle p = _particles[i];
+			
+			// Apply gravity (downward movement)
+			p.Position.Y += p.Speed * (float)delta;
+
+			// Check if debris has fallen off the screen
+			if (p.Position.Y > _viewportSize.Y)
+			{
+				p.Position = ResetParticlePosition(p.Size);
+				p.Speed = _rng.RandfRange(FALL_SPEED_MIN, FALL_SPEED_MAX);
+			}
+			
+			_particles[i] = p; // Store the updated struct back into the list
+		}
+		
+		// 2. Redraw the particles on the screen
+		if (_drawingNode != null)
+		{
+			_drawingNode.QueueRedraw();
+		}
+	}
+	
+	// --------------------------------------------------------------------------
+	// PLAYER SPAWN LOGIC (Unchanged)
+	// --------------------------------------------------------------------------
+
+	private void SpawnPlayer()
+	{
+		Node2D player = null; 
+
+		foreach (Node node in GetTree().Root.GetChildren())
+		{
+			if (node.IsInGroup(PlayerGroupName) && node.Name == "CharacterNode" && node is Node2D playerNode)
+			{
+				player = playerNode;
+				break;
+			}
+		}
+
+		if (player == null)
+		{
+			GD.PrintErr("Could not find player in the scene tree!");
+			return;
+		}
+
+		var spawnPoint = GetNodeOrNull<Marker2D>(SpawnMarkerName);
+
+		if (spawnPoint != null)
+		{
+			player.GlobalPosition = spawnPoint.GlobalPosition;
+			GD.Print($"Player successfully spawned at: {player.GlobalPosition}");
+		}
+		else
+		{
+			GD.PrintErr($"Could not find spawn marker: {SpawnMarkerName}. Player may be stuck at (0, 0).");
+		}
+	}
+	
+	// --------------------------------------------------------------------------
+	// FALLING ROCK DRAWING LOGIC
+	// --------------------------------------------------------------------------
+
+	/// <summary>
+	/// Initializes the particle list and creates the node responsible for drawing them.
+	/// </summary>
+	private void InitializeFallingRocks()
+	{
+		// 1. Setup the CanvasLayer and the Drawing Node
+		CanvasLayer debrisLayer = new CanvasLayer();
+		debrisLayer.Layer = 100;
+		AddChild(debrisLayer);
+
+		_drawingNode = new Node2D();
+		_drawingNode.Name = "DebrisDrawingNode";
+		_drawingNode.SetProcess(false); 
+		_drawingNode.SetProcessInput(false);
+		_drawingNode.SetProcessUnhandledInput(false);
+		_drawingNode.SetProcessMode(Node.ProcessModeEnum.Always);
+
+		// Override the _Draw() function using a lambda function connected to the Draw signal
+		_drawingNode.Draw += OnDebrisDraw; 
+		debrisLayer.AddChild(_drawingNode);
+		
+		// 2. Populate the particle data list
+		for (int i = 0; i < DEBRIS_COUNT; i++)
+		{
+			RockParticle p = new RockParticle();
+			p.Size = _rng.RandfRange(DEBRIS_SIZE_MIN, DEBRIS_SIZE_MAX);
+			p.Speed = _rng.RandfRange(FALL_SPEED_MIN, FALL_SPEED_MAX);
+			p.Position = ResetParticlePosition(p.Size, true); // Initial placement
+			_particles.Add(p);
+		}
+		
+		GD.Print($"Initialized {DEBRIS_COUNT} procedural falling rocks.");
+	}
+
+	/// <summary>
+	/// Custom draw function executed when _drawingNode.QueueRedraw() is called.
+	/// </summary>
+	private void OnDebrisDraw()
+	{
+		Color drawColor = new Color(DEBRIS_COLOR_VALUE, DEBRIS_COLOR_VALUE, DEBRIS_COLOR_VALUE, DEBRIS_OPACITY);
+		
+		// Iterate through the particle data and draw a filled rectangle for each one
+		foreach (var p in _particles)
+		{
+			// Define the rectangle based on the particle's size and position
+			Rect2 rect = new Rect2(p.Position, new Vector2(p.Size, p.Size));
+			
+			// Draw the filled rectangle (the rock speck)
+			_drawingNode.DrawRect(rect, drawColor);
+		}
+	}
+	
+	/// <summary>
+	/// Calculates a new starting position for a particle (off-screen top or random start).
+	/// </summary>
+	private Vector2 ResetParticlePosition(float size, bool initialPlacement = false)
+	{
+		// Random horizontal start position across the viewport width
+		float startX = _rng.RandfRange(0, _viewportSize.X);
+		
+		float startY;
+		if (initialPlacement)
+		{
+			// Initial placement can be anywhere on screen for immediate visual feedback
+			startY = _rng.RandfRange(0, _viewportSize.Y); 
+		}
+		else
+		{
+			// Start above the screen by its size, ready to fall into view
+			startY = _rng.RandfRange(-size - 50.0f, -size - 1.0f); 
+		}
+
+		return new Vector2(startX, startY);
+	}
+}

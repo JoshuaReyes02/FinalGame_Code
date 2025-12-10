@@ -1,0 +1,101 @@
+using Godot;
+
+public partial class Pausemenu : Control
+{
+	private const string AnimationPlayerPath = "AnimationPlayer";
+	private AnimationPlayer _animationPlayer;
+	
+	// --- PATH CONSTANTS ---
+	// Define the Main Menu path explicitly for use in OnQuitPressed
+	private const string MainMenuPath = "res://GameScene/mainmenu.tscn"; 
+
+	public override void _Ready()
+	{
+		_animationPlayer = GetNodeOrNull<AnimationPlayer>(AnimationPlayerPath);
+		if (_animationPlayer == null)
+		{
+			GD.PrintErr($"ERROR: AnimationPlayer node not found at path: {AnimationPlayerPath}.");
+		}
+
+		// Ensures the Control node processes input when the game is paused
+		ProcessMode = ProcessModeEnum.Always;
+
+		_animationPlayer?.Play("RESET");
+		
+		Visible = false;
+	}
+	
+	// ------------------------------------------------------------------
+	// *** The most reliable way to detect Escape during a pause ***
+	// ------------------------------------------------------------------
+	public override void _Input(InputEvent @event)
+	{
+		if (@event.IsActionPressed("esc"))
+		{
+			// Consumes the input event, preventing the input from being processed by other nodes.
+			GetViewport().SetInputAsHandled();
+			
+			// Toggle pause state
+			if (GetTree().Paused)
+			{
+				Resume();
+			}
+			else
+			{
+				Pause();
+			}
+		}
+	}
+
+	// --- Core Pause/Resume Logic ---
+
+	public void Resume()
+	{
+		GetTree().Paused = false;
+		_animationPlayer?.PlayBackwards("blur");
+		Visible = false; // Hide the menu
+	}
+
+	public void Pause()
+	{
+		GetTree().Paused = true;
+		_animationPlayer?.Play("blur");
+		Visible = true; // Show the menu
+	}
+
+	// --- Signal Handlers (Must be connected in Editor) ---
+
+	private void OnResumePressed()
+	{
+		Resume();
+	}
+
+	private void OnRestartPressed()
+	{
+		// 1. Unpause the game world immediately
+		GetTree().Paused = false; 
+
+		// 2. Reset specific player-held state (as in GameOverScreen)
+		GameManager.PlayerHasGun = false; 
+		GameManager.SetEquippedWeapon("Pistol");
+		
+		// 3. CRITICAL FIX: Use GameManager.LoadNextLevel to reload the current scene, 
+		// ensuring GameManager.ClearMapPersistence() is called.
+		// GetTree().CurrentScene.SceneFilePath gives the path of the current level.
+		GameManager.LoadNextLevel(GetTree().CurrentScene.SceneFilePath); 
+	}
+
+	private void OnQuitPressed()
+	{
+		// 1. Unpause the game world immediately
+		GetTree().Paused = false; 
+		
+		// 2. Reset specific player-held state (as in GameOverScreen)
+		GameManager.PlayerHasGun = false; 
+		GameManager.SetEquippedWeapon("Pistol"); 
+
+		// 3. CRITICAL FIX: Use GameManager.LoadNextLevel to load the main menu, 
+		// ensuring GameManager.ClearMapPersistence() is called.
+		GameManager.LoadNextLevel(MainMenuPath);
+	}
+}

@@ -1,0 +1,200 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+
+public partial class Level8Part2 : Node2D 
+{
+	private const string PlayerGroupName = "player";
+	private const string SpawnMarkerName = "Level8Part2_Spawn";
+	
+	// --- Falling Snow Constants ---
+	private const int SNOW_PARTICLE_COUNT = 800;        // High count for dense snow
+	private const float FALL_SPEED_MIN = 80.0f;         // Moderate vertical fall speed
+	private const float FALL_SPEED_MAX = 150.0f;        
+	private const float HORIZONTAL_SWAY_SPEED = 30.0f;  // Gentle side-to-side sway
+	private const float SWAY_CHANGE_TIME = 4.0f;        // Time before sway reverses
+	private const float SNOW_OPACITY = 0.9f;            // Nearly opaque for clear flakes
+	private const float SNOW_SIZE_MIN = 2.0f;           // Small flake size
+	private const float SNOW_SIZE_MAX = 4.0f;           
+	private Color SNOW_COLOR = new Color(1.0f, 1.0f, 1.0f, SNOW_OPACITY); // Pure White
+	
+	private RandomNumberGenerator _rng = new RandomNumberGenerator();
+	private Vector2 _viewportSize;
+
+	// Structure to hold particle data
+	private struct SnowParticle
+	{
+		public Vector2 Position;
+		public float Size;
+		public float FallSpeed;         
+		public float HorizontalSway;    
+		public float SwayTimer;         
+	}
+
+	private List<SnowParticle> _particles = new List<SnowParticle>();
+	private Node2D _drawingNode;
+
+	public override void _Ready()
+	{
+		GD.Print("Level 8 Part 2 Loaded. Attempting to spawn player...");
+		
+		_rng.Seed = (ulong)DateTime.Now.Ticks;
+		_viewportSize = GetViewportRect().Size;
+		
+		// 1. --- Player Spawning Logic ---
+		SpawnPlayer();
+
+		// 2. --- Falling Snow Particle Logic ---
+		InitializeFallingSnow();
+	}
+
+// --- Player Spawning Logic (Unchanged) ---
+	
+	private void SpawnPlayer()
+	{
+		Node2D player = null; 
+
+		foreach (Node node in GetTree().Root.GetChildren())
+		{
+			if (node.IsInGroup(PlayerGroupName) && node.Name == "CharacterNode" && node is Node2D playerNode)
+			{
+				player = playerNode;
+				break;
+			}
+		}
+
+		if (player == null)
+		{
+			GD.PrintErr("Could not find player in the scene tree!");
+			return;
+		}
+
+		var spawnPoint = GetNodeOrNull<Marker2D>(SpawnMarkerName);
+
+		if (spawnPoint != null)
+		{
+			player.GlobalPosition = spawnPoint.GlobalPosition;
+			GD.Print($"Player successfully spawned at: {player.GlobalPosition}");
+		}
+		else
+		{
+			GD.PrintErr($"Could not find spawn marker: {SpawnMarkerName}. Player may be stuck at (0, 0).");
+		}
+	}
+	
+// --------------------------------------------------------------------------
+// MANUAL MOVEMENT LOGIC (Snow)
+// --------------------------------------------------------------------------
+
+	public override void _Process(double delta)
+	{
+		// 1. Update Particle Positions
+		for (int i = 0; i < _particles.Count; i++)
+		{
+			SnowParticle p = _particles[i];
+			float dt = (float)delta;
+			
+			// 1. Vertical Fall
+			p.Position.Y += p.FallSpeed * dt;
+			
+			// 2. Horizontal Sway
+			p.Position.X += p.HorizontalSway * HORIZONTAL_SWAY_SPEED * dt;
+			
+			// Update Sway Timer
+			p.SwayTimer -= dt;
+
+			// Check if it's time to change horizontal sway direction
+			if (p.SwayTimer <= 0)
+			{
+				p.HorizontalSway *= -1; 
+				p.SwayTimer = SWAY_CHANGE_TIME;
+			}
+
+			// --- Boundary Check: Reset if fallen off screen ---
+			if (p.Position.Y > _viewportSize.Y + p.Size)
+			{
+				p.Position = ResetSnowPosition(p.Size);
+			}
+			// Horizontal wrap-around (snow should stay visible)
+			if (p.Position.X < -p.Size) p.Position.X = _viewportSize.X + p.Size;
+			if (p.Position.X > _viewportSize.X + p.Size) p.Position.X = -p.Size;
+
+
+			_particles[i] = p; 
+		}
+		
+		// 2. Redraw the particles on the screen
+		if (_drawingNode != null)
+		{
+			_drawingNode.QueueRedraw();
+		}
+	}
+	
+// --------------------------------------------------------------------------
+// FALLING SNOW DRAWING LOGIC
+// --------------------------------------------------------------------------
+
+	private void InitializeFallingSnow()
+	{
+		// 1. Setup the CanvasLayer and the Drawing Node
+		CanvasLayer snowLayer = new CanvasLayer();
+		snowLayer.Layer = 100;
+		AddChild(snowLayer);
+
+		_drawingNode = new Node2D();
+		_drawingNode.Name = "SnowDrawingNode";
+		_drawingNode.SetProcessMode(Node.ProcessModeEnum.Always); 
+		_drawingNode.Draw += OnSnowDraw; 
+		snowLayer.AddChild(_drawingNode);
+		
+		// 2. Populate the particle data list
+		for (int i = 0; i < SNOW_PARTICLE_COUNT; i++)
+		{
+			SnowParticle p = new SnowParticle();
+			p.Size = _rng.RandfRange(SNOW_SIZE_MIN, SNOW_SIZE_MAX);
+			p.FallSpeed = _rng.RandfRange(FALL_SPEED_MIN, FALL_SPEED_MAX);
+			
+			// Initial random setup
+			p.Position = ResetSnowPosition(p.Size, true); 
+			p.HorizontalSway = _rng.Randf() < 0.5f ? 1.0f : -1.0f; 
+			p.SwayTimer = _rng.RandfRange(0.0f, SWAY_CHANGE_TIME);
+			
+			_particles.Add(p);
+		}
+		
+		GD.Print($"Initialized {SNOW_PARTICLE_COUNT} procedural falling snow particles.");
+	}
+
+	/// <summary>
+	/// Custom draw function executed when _drawingNode.QueueRedraw() is called.
+	/// </summary>
+	private void OnSnowDraw()
+	{
+		foreach (var p in _particles)
+		{
+			// Draw the particle as a small, white square
+			Rect2 rect = new Rect2(p.Position - new Vector2(p.Size/2, p.Size/2), new Vector2(p.Size, p.Size));
+			_drawingNode.DrawRect(rect, SNOW_COLOR);
+		}
+	}
+	
+	/// <summary>
+	/// Calculates a new starting position for a snowflake (off-screen top).
+	/// </summary>
+	private Vector2 ResetSnowPosition(float size, bool initialPlacement = false)
+	{
+		float startX = _rng.RandfRange(0, _viewportSize.X);
+		
+		float startY;
+		if (initialPlacement)
+		{
+			startY = _rng.RandfRange(0, _viewportSize.Y); 
+		}
+		else
+		{
+			startY = _rng.RandfRange(-size - 100.0f, -size - 1.0f); 
+		}
+
+		return new Vector2(startX, startY);
+	}
+}

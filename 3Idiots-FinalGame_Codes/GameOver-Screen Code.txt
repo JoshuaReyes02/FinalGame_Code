@@ -1,0 +1,72 @@
+using Godot;
+using System;
+
+// This script inherits from Control, as confirmed by your scene structure.
+public partial class GameOverScreen : Control
+{
+	// --- PATH VARIABLES ---
+	// It's usually safer to pull these paths from a configuration or the GameManager itself,
+	// but using local constants based on your input for now.
+	private string _lastLevelPath = "res://GameScene/game_scene.tscn"; 
+	private const string Level1Path = "res://GameScene/game_scene.tscn"; 
+	private const string MainMenuPath = "res://GameScene/mainmenu.tscn"; 
+
+	public override void _Ready()
+	{
+		GD.Print("Game Over Screen is ready.");
+	}
+
+	public void SetLastLevelPath(string path)
+	{
+		_lastLevelPath = path;
+		GD.Print($"Last level path set to: {_lastLevelPath}");
+	}
+
+	/// <summary>
+	/// Handles unpausing, removing the screen, and changing the scene safely using the GameManager.
+	/// </summary>
+	private void SafelyChangeSceneViaGameManager(string scenePath)
+	{
+		// 1. Unpause the game world immediately
+		GetTree().Paused = false;
+		
+		// 2. Remove the screen instance immediately
+		QueueFree(); 
+		
+		// 🔑 CRITICAL FIX: Use GameManager.LoadNextLevel, which ensures that 
+		// GameManager.ClearMapPersistence() is called before the scene loads.
+		Callable.From(() => GameManager.LoadNextLevel(scenePath)).CallDeferred();
+	}
+	
+	// --- SIGNAL METHODS (Connected in the editor) ---
+
+	private void _on_continue_button_pressed()
+	{
+		GD.Print("Continue button pressed. Returning to last level.");
+		// Continue should not reset the map persistence if the level is designed 
+		// to retain item states upon retry from the last checkpoint.
+		// However, for clean reloads, we use the GameManager which resets map items.
+		SafelyChangeSceneViaGameManager(_lastLevelPath); 
+	}
+
+	private void _on_restart_button_pressed()
+	{
+		// 1. Reset specific player-held state (e.g., if the player starts without a gun)
+		// Map items (chests) will be reset by GameManager.LoadNextLevel.
+		GameManager.PlayerHasGun = false; 
+		GameManager.SetEquippedWeapon("Pistol"); // Set a default starting weapon
+		
+		GD.Print("Restart button pressed. Loading Level 1 (with full persistence reset).");
+		SafelyChangeSceneViaGameManager(Level1Path); 
+	}
+
+	private void _on_return_button_pressed()
+	{
+		// 1. Reset specific player-held state upon returning to the main menu
+		GameManager.PlayerHasGun = false;
+		GameManager.SetEquippedWeapon("Pistol"); 
+		
+		GD.Print("Return button pressed. Going to Main Menu (with full persistence reset).");
+		SafelyChangeSceneViaGameManager(MainMenuPath);
+	}
+}

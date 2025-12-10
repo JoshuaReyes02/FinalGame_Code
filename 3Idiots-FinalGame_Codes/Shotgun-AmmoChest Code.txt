@@ -1,0 +1,138 @@
+using Godot;
+using System;
+
+public partial class ShotgunAmmoChest : Node2D
+{
+	// --- Config ---
+	// Default Shotgun ammo pickup amount (adjusted for lower shotgun max capacity)
+	[Export] public int AmmoAmount { get; set; } = 12; 
+	[Export] public string InteractAction { get; set; } = "interact"; 
+	
+	private bool _playerInRange = false;
+	private bool _isOpened = false;
+	private bool _isAnimationPlaying = false; 
+
+	private AnimatedSprite2D _sprite;
+	private Area2D _area;
+
+	// Animation names
+	// Removed: private const string CLOSED_ANIMATION = "closed_ammo";
+	private const string OPEN_ANIMATION = "open";
+
+	public override void _Ready()
+	{
+		// Node setup
+		_sprite = GetNode<AnimatedSprite2D>("AnimatedSprite2D");
+		_area = GetNode<Area2D>("Area2D");
+
+		// Connect interaction signals
+		_area.BodyEntered += OnBodyEntered;
+		_area.BodyExited += OnBodyExited;
+		
+		// Connect the AnimationFinished signal
+		_sprite.AnimationFinished += OnAnimationFinished;
+
+		// 1. Initial State Check: Set to closed state (frame 0 of "open" animation).
+		// Persistence checks removed to match the current GameManager design.
+		if (_sprite.SpriteFrames.HasAnimation(OPEN_ANIMATION))
+		{
+			_sprite.Animation = OPEN_ANIMATION;
+			_sprite.Frame = 0;
+		}
+		else
+		{
+			GD.PrintErr($"ShotgunAmmoChest is missing the required animation: {OPEN_ANIMATION}. The chest will not function correctly.");
+		}
+	}
+
+	private void SetToOpenedState()
+	{
+		_isOpened = true;
+		
+		// Set animation to the last frame of "open"
+		if (_sprite.SpriteFrames.HasAnimation(OPEN_ANIMATION))
+		{
+			_sprite.Play(OPEN_ANIMATION);
+			// Stop and hold on the last frame
+			_sprite.Frame = _sprite.SpriteFrames.GetFrameCount(OPEN_ANIMATION) - 1;
+			_sprite.Stop();
+		}
+		_area.Monitoring = false;
+	}
+
+	private void OnBodyEntered(Node2D body)
+	{
+		if (body.IsInGroup("player"))
+			_playerInRange = true;
+	}
+
+	private void OnBodyExited(Node2D body)
+	{
+		if (body.IsInGroup("player"))
+			_playerInRange = false;
+	}
+
+	public override void _Process(double delta)
+	{
+		// Check for interaction only if player is in range, chest is closed, and no animation is running
+		if (_playerInRange && !_isOpened && !_isAnimationPlaying && Input.IsActionJustPressed(InteractAction))
+		{
+			OpenChest();
+		}
+	}
+
+	private void OpenChest()
+	{
+		_isOpened = true; // Prevents the chest from being opened again during this scene load
+		_isAnimationPlaying = true; // Block interaction until animation finishes
+		
+		// Start playing the open animation
+		if (_sprite.SpriteFrames.HasAnimation(OPEN_ANIMATION))
+		{
+			_sprite.Animation = OPEN_ANIMATION; 
+			_sprite.Play();
+			GD.Print("Playing 'open' animation.");
+		}
+		else
+		{
+			GD.PrintErr("FATAL: Cannot play 'open' animation. Check SpriteFrames resource.");
+			_isAnimationPlaying = false;
+		}
+
+		GiveReward();
+		_area.Monitoring = false;
+		
+		// Persistence saving removed to match the current GameManager design.
+	}
+
+	/// <summary>
+	/// Manually stops the "open" animation on its last frame.
+	/// </summary>
+	private void OnAnimationFinished()
+	{
+		if (_sprite.Animation == OPEN_ANIMATION)
+		{
+			int frameCount = _sprite.SpriteFrames.GetFrameCount(OPEN_ANIMATION);
+			_sprite.Stop();
+			_sprite.Frame = frameCount - 1; 
+			_isAnimationPlaying = false;
+			GD.Print($"Animation '{OPEN_ANIMATION}' finished and locked on last frame."); 
+		}
+	}
+
+	private void GiveReward()
+	{
+		var player = GetTree().GetFirstNodeInGroup("player") as CharacterNode;
+
+		if (player != null)
+		{
+			// The player's GiveAmmo method will be called.
+			player.GiveAmmo(AmmoAmount);
+			GD.Print($"Shotgun Ammo Chest opened. Gave {AmmoAmount} Ammo.");
+		}
+		else
+		{
+			GD.PrintErr("Shotgun Ammo Chest could not find the CharacterNode (player).");
+		}
+	}
+}

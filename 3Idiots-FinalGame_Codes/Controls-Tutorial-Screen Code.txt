@@ -1,0 +1,130 @@
+using Godot;
+using System;
+
+public partial class Controlsscene : Node2D
+{
+	// Define the path back to the main menu
+	private const string MAIN_MENU_PATH = "res://GameScene/mainmenu.tscn"; 
+
+	// --- Transition Properties (Copied from Mainmenu.cs) ---
+	private const float WIPE_IN_DURATION = 0.5f; // Duration for the wipe in
+	private const float PIXEL_BLOCKS = 32.0f; // Simple, chunky pixel size for retro feel
+
+	// --- Transition Members ---
+	private ColorRect _transitionRect;
+	private ShaderMaterial _material;
+
+	// --- SHADER CODE FOR SIMPLE BLACK PIXELATED DIAGONAL WIPE ---
+	private const string TRANSITION_SHADER_CODE = @"
+// Pixelated Diagonal Wipe Shader (Top-Left to Bottom-Right)
+shader_type canvas_item;
+
+uniform float progress = 0.0; // 0.0 is transparent, 1.0 is obscured
+uniform float blocks = 32.0; // Resolution of the pixelation
+
+void fragment() {
+    // 1. Calculate Block UV (for pixelation)
+    float block_size = 1.0 / blocks;
+    vec2 block_uv = floor(UV / block_size) * block_size;
+    vec2 block_center = block_uv + block_size * 0.5;
+
+    // 2. Diagonal Wipe Metric (Top-Left to Bottom-Right)
+    float diagonal_dist = block_center.x + block_center.y;
+    float normalized_dist = diagonal_dist / 2.0; 
+
+    // 3. Transition Logic
+    if (progress > normalized_dist) {
+        COLOR = vec4(0.0, 0.0, 0.0, 1.0); // SOLID BLACK BLOCK
+    } else {
+        COLOR = vec4(0.0, 0.0, 0.0, 0.0); // Transparent block
+    }
+}
+";
+
+	public override void _Ready()
+	{
+		// 1. Initialize the transition screen (Sets up the shader and ColorRect)
+		InitializeTransitionScreen();
+		
+		// 2. Connect the "ReturnButton" node
+		if (TryGetNode("ReturnButton", out Button returnButton)) 
+		{
+			returnButton.Pressed += OnReturnPressed;
+		}
+	}
+
+	public override void _Process(double delta)
+	{
+		// No processing needed for a menu scene
+	}
+
+	private void InitializeTransitionScreen()
+	{
+		// 1. Create a CanvasLayer for drawing on top
+		var canvasLayer = new CanvasLayer();
+		canvasLayer.Name = "TransitionCanvasLayer";
+		canvasLayer.Layer = 100;
+		canvasLayer.ProcessMode = ProcessModeEnum.Always; 
+		AddChild(canvasLayer);
+
+		// 2. Create the ColorRect (the transition screen)
+		_transitionRect = new ColorRect();
+		_transitionRect.Name = "TransitionColorRect";
+		_transitionRect.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		_transitionRect.MouseFilter = Control.MouseFilterEnum.Ignore; 
+		// Set the base color to fully transparent black (0, 0, 0, 0)
+		_transitionRect.Color = new Color(0, 0, 0, 0); 
+
+		// 3. Create and apply the ShaderMaterial
+		var shader = new Shader();
+		shader.Code = TRANSITION_SHADER_CODE;
+		_material = new ShaderMaterial();
+		_material.Shader = shader;
+		
+		_transitionRect.Material = _material;
+		
+		// Set initial shader uniform values
+		_material.SetShaderParameter("progress", 0.0f); // Start invisible
+		_material.SetShaderParameter("blocks", PIXEL_BLOCKS);
+
+		canvasLayer.AddChild(_transitionRect);
+	}
+	
+	/// <summary>
+	/// Handles the button press to return to the Main Menu using the black wipe transition.
+	/// </summary>
+	private void OnReturnPressed()
+	{
+		// This condition is crucial: if _material is null, the script won't crash, but it won't animate.
+		if (_material == null) return; 
+
+		GD.Print("Starting black pixel wipe transition to main menu.");
+		
+		// 1. Create the Tween animation
+		var tween = GetTree().CreateTween();
+		
+		// 2. ANIMATE WIPE: Animate 'progress' from 0.0 (visible) to 1.0 (fully black screen)
+		tween.TweenProperty(_material, "shader_parameter/progress", 1.0f, WIPE_IN_DURATION)
+			.SetEase(Tween.EaseType.Out)
+			.SetTrans(Tween.TransitionType.Linear); 
+
+		// 3. CHANGE SCENE: Once the wipe is complete, load the main menu
+		tween.TweenCallback(Callable.From(() =>
+		{
+			GD.Print("Diagonal transition complete — loading main menu.");
+			GetTree().ChangeSceneToFile(MAIN_MENU_PATH);
+		}));
+	}
+	
+	// Helper method to safely get a node 
+	private bool TryGetNode<T>(string name, out T node) where T : Node
+	{
+		if (HasNode(name))
+		{
+			node = GetNode<T>(name);
+			return true;
+		}
+		node = null;
+		return false;
+	}
+}

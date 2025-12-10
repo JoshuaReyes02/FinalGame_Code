@@ -1,0 +1,105 @@
+using Godot;
+using System;
+
+/// <summary>
+/// A chest that, when opened, permanently unlocks the Rifle weapon and equips it.
+/// </summary>
+public partial class RifleChest : Node2D
+{
+	private bool _playerInRange = false;
+	private bool _isOpened = false;
+
+	private AnimatedSprite2D _sprite;
+	private Area2D _area;
+	
+	// Define the weapon granted by this chest
+	private const string WeaponName = "Rifle"; 
+
+	public override void _Ready()
+	{
+		// Make sure these child nodes exist in your Rifle Chest scene
+		_sprite = GetNode<AnimatedSprite2D>("AnimatedSprite2D");
+		_area = GetNode<Area2D>("Area2D");
+
+		// Check global state: If the weapon is already unlocked, keep the chest opened visually
+		if (GameManager.Instance != null && GameManager.Instance.IsWeaponUnlocked(WeaponName))
+		{
+			// If already unlocked, start in the opened state and disable interaction
+			_isOpened = true;
+			if (_sprite.SpriteFrames.HasAnimation("open"))
+			{
+				_sprite.Play("open");
+			}
+			_area.Monitoring = false; // Disable interaction immediately
+			return; // Skip signal connections
+		}
+
+		// Connect the signals
+		_area.BodyEntered += OnBodyEntered;
+		_area.BodyExited += OnBodyExited;
+
+		// Ensure chest starts closed
+		if (_sprite.SpriteFrames.HasAnimation("closed"))
+			_sprite.Play("closed");
+	}
+
+	private void OnBodyEntered(Node2D body)
+	{
+		// Check for the player group
+		if (body.IsInGroup("player"))
+			_playerInRange = true;
+	}
+
+	private void OnBodyExited(Node2D body)
+	{
+		// Check for the player group
+		if (body.IsInGroup("player"))
+			_playerInRange = false;
+	}
+
+	public override void _Process(double delta)
+	{
+		// Check for interaction input only if the player is in range and the chest is closed
+		if (_playerInRange && !_isOpened && Input.IsActionJustPressed("interact"))
+			OpenChest();
+	}
+
+	private void OpenChest()
+	{
+		_isOpened = true;
+
+		// Play the opening animation
+		if (_sprite.SpriteFrames.HasAnimation("open"))
+			_sprite.Play("open");
+
+		GiveReward();
+		
+		// 1. Disable the Area2D monitor so the player can't trigger it again
+		_area.Monitoring = false;
+		
+		// 2. Disconnect signals after use to prevent unexpected behavior
+		_area.BodyEntered -= OnBodyEntered;
+		_area.BodyExited -= OnBodyExited;
+	}
+
+	private void GiveReward()
+	{
+		var player = GetTree().GetFirstNodeInGroup("player") as CharacterNode;
+		var manager = GameManager.Instance;
+
+		if (player != null && manager != null)
+		{
+			// CRITICAL STEP 1: Permanently unlock the weapon in the global state
+			manager.UnlockWeapon(WeaponName);
+
+			// CRITICAL STEP 2: Equip the weapon immediately
+			player.EquipWeapon(WeaponName);
+
+			GD.Print($"{WeaponName} unlocked and equipped! Can now be switched with keys.");
+		}
+		else
+		{
+			GD.PrintErr($"RifleChest failed to find Player ({player == null}) or GameManager ({manager == null}).");
+		}
+	}
+}

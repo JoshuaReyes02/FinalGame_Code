@@ -1,0 +1,178 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+using System.Linq; 
+
+public partial class SelectLevelScene : Node2D
+{
+	// Dictionary mapping Button Node Names to their respective scene paths
+	private readonly Dictionary<string, string> LevelPaths = new Dictionary<string, string>
+	{
+		{"Level1Button", "res://GameScene/game_scene.tscn"},
+		{"Level2Button", "res://GameScene/Level2.tscn"},
+		{"Level3Button", "res://GameScene/level3.tscn"},
+		{"Level4Button", "res://GameScene/level4.tscn"},
+		{"Level5Button", "res://GameScene/level5.tscn"},
+		{"Level6Button", "res://GameScene/level6.tscn"},
+		{"Level7Button", "res://GameScene/level7.tscn"},
+		{"Level8Button", "res://GameScene/Level8.tscn"},
+		{"Level9Button", "res://GameScene/level9.tscn"},
+		{"Level10Button", "res://GameScene/Level10.tscn"},
+		{"Level11Button", "res://GameScene/finallevel.tscn"},
+	};
+
+	// --- Transition Properties ---
+	private const float WIPE_IN_DURATION = 0.5f;
+	private const float PIXEL_BLOCKS = 32.0f; // Simple, chunky pixel size
+
+	// --- Transition Members ---
+	private ColorRect _transitionRect;
+	private ShaderMaterial _material;
+	
+	// --- SHADER CODE FOR SIMPLE PIXELATED DIAGONAL WIPE (WIPE IN) ---
+	private const string TRANSITION_SHADER_CODE = @"
+// Pixelated Diagonal Wipe Shader (Top-Left to Bottom-Right)
+shader_type canvas_item;
+
+uniform float progress = 0.0; // 0.0 is visible, 1.0 is obscured
+uniform float blocks = 32.0; // Resolution of the pixelation
+
+void fragment() {
+    // 1. Calculate Block UV (for pixelation)
+    float block_size = 1.0 / blocks;
+    vec2 block_uv = floor(UV / block_size) * block_size;
+    vec2 block_center = block_uv + block_size * 0.5;
+
+    // 2. Diagonal Wipe Metric (Top-Left to Bottom-Right)
+    float diagonal_dist = block_center.x + block_center.y;
+    
+    // Normalize distance to range from 0.0 to 1.0
+    float normalized_dist = diagonal_dist / 2.0; 
+
+    // 3. Transition Logic
+    if (progress > normalized_dist) {
+        COLOR = vec4(0.0, 0.0, 0.0, 1.0); // Black block
+    } else {
+        COLOR = vec4(0.0, 0.0, 0.0, 0.0); // Transparent block
+    }
+}
+";
+
+	public override void _Ready()
+	{
+		// Initialize the transition screen (starts invisible)
+		InitializeTransitionScreen();
+		
+		foreach (var kvp in LevelPaths)
+		{
+			string buttonName = kvp.Key;
+			string scenePath = kvp.Value;
+
+			// Try to find the button node in the current scene
+			if (TryGetNode(buttonName, out Button levelButton))
+			{
+				levelButton.Disabled = false;
+				
+				// Connect the button's Pressed signal to the transition handler
+				levelButton.Pressed += () => OnLevelSelected(scenePath);
+			}
+			else
+			{
+				GD.PrintErr($"Button node '{buttonName}' not found in the Select Level scene.");
+			}
+		}
+		
+		// Connect BackButton to return to the main menu
+		if (TryGetNode("BackButton", out Button backButton))
+		{
+			 backButton.Pressed += OnBackPressed;
+		}
+
+		// Connect ReturnButton to return to the main menu
+		if (TryGetNode("ReturnButton", out Button returnButton))
+		{
+			 returnButton.Pressed += OnBackPressed; 
+		}
+	}
+	
+	private void InitializeTransitionScreen()
+	{
+		// 1. Create a CanvasLayer for drawing on top
+		var canvasLayer = new CanvasLayer();
+		canvasLayer.Name = "TransitionCanvasLayer";
+		canvasLayer.Layer = 100;
+		canvasLayer.ProcessMode = ProcessModeEnum.Always; 
+		AddChild(canvasLayer);
+
+		// 2. Create the ColorRect (the transition screen)
+		_transitionRect = new ColorRect();
+		_transitionRect.Name = "TransitionColorRect";
+		_transitionRect.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		_transitionRect.MouseFilter = Control.MouseFilterEnum.Ignore; 
+
+		// 3. Create and apply the ShaderMaterial
+		var shader = new Shader();
+		shader.Code = TRANSITION_SHADER_CODE;
+		_material = new ShaderMaterial();
+		_material.Shader = shader;
+		
+		_transitionRect.Material = _material;
+		
+		// Set initial shader uniform values
+		_material.SetShaderParameter("progress", 0.0f); // Start invisible
+		_material.SetShaderParameter("blocks", PIXEL_BLOCKS);
+
+		canvasLayer.AddChild(_transitionRect);
+	}
+
+	private void OnLevelSelected(string path)
+	{
+		// Use the generic transition handler
+		StartWipeIn(path);
+	}
+	
+	/// <summary>
+	/// Handles scene transition back to the main menu.
+	/// </summary>
+	private void OnBackPressed()
+	{
+		// Use the generic transition handler
+		StartWipeIn("res://GameScene/mainmenu.tscn");
+	}
+	
+	/// <summary>
+	/// Starts the diagonal pixelated wipe-in transition before changing the scene.
+	/// </summary>
+	private void StartWipeIn(string targetPath)
+	{
+		if (_material == null) return;
+
+		GD.Print($"Starting diagonal transition to: {targetPath}");
+		
+		var tween = GetTree().CreateTween();
+		
+		// 1. WIPE IN: Animate 'progress' from 0.0 (visible) to 1.0 (fully black)
+		tween.TweenProperty(_material, "shader_parameter/progress", 1.0f, WIPE_IN_DURATION)
+			.SetEase(Tween.EaseType.Out)
+			.SetTrans(Tween.TransitionType.Linear);
+
+		// 2. LOAD NEW SCENE: Once the wipe is complete (screen is black), load the new level
+		tween.TweenCallback(Callable.From(() =>
+		{
+			GD.Print("Diagonal transition complete — loading new scene.");
+			GetTree().ChangeSceneToFile(targetPath);
+		}));
+	}
+
+	// Helper method to safely get a node
+	private bool TryGetNode<T>(string name, out T node) where T : Node
+	{
+		if (HasNode(name))
+		{
+			node = GetNode<T>(name);
+			return true;
+		}
+		node = null;
+		return false;
+	}
+}

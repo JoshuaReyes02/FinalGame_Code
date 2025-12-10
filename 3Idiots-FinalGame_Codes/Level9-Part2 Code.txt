@@ -1,0 +1,214 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+
+public partial class Level9Part2 : Node2D 
+{
+	private const string PlayerGroupName = "player";
+	private const string SpawnMarkerName = "Level9Part2_Spawn"; // Corrected marker name
+	
+	// --- Falling Autumn Leaves Constants ---
+	private const int LEAF_COUNT = 100;                 // High count for dense foliage
+	private const float FALL_SPEED_MIN = 40.0f;         
+	private const float FALL_SPEED_MAX = 80.0f;         
+	private const float HORIZONTAL_DRIFT_SPEED = 20.0f; 
+	private const float LEAF_OPACITY = 0.85f;           
+	private const float LEAF_SIZE_MIN = 4.0f;           
+	private const float LEAF_SIZE_MAX = 7.0f;           
+	private const float DRIFT_CHANGE_TIME = 3.0f;       
+
+	private RandomNumberGenerator _rng = new RandomNumberGenerator();
+	private Vector2 _viewportSize;
+
+	// Structure to hold particle data
+	private struct LeafParticle
+	{
+		public Vector2 Position;
+		public float Size;
+		public float FallSpeed;         
+		public float HorizontalDrift;   
+		public float DriftTimer;        
+		public Color LeafColor;         
+	}
+
+	private List<LeafParticle> _particles = new List<LeafParticle>();
+	private Node2D _drawingNode;
+
+	public override void _Ready()
+	{
+		GD.Print("Level 9 Part 2 Loaded. Attempting to spawn player...");
+		
+		_rng.Seed = (ulong)DateTime.Now.Ticks;
+		_viewportSize = GetViewportRect().Size;
+		
+		// 1. --- Player Spawning Logic ---
+		SpawnPlayer();
+
+		// 2. --- Falling Leaves Particle Logic ---
+		InitializeFallingLeaves();
+	}
+	
+// --------------------------------------------------------------------------
+// MANUAL MOVEMENT LOGIC (Leaves)
+// --------------------------------------------------------------------------
+
+	public override void _Process(double delta)
+	{
+		// 1. Update Particle Positions
+		for (int i = 0; i < _particles.Count; i++)
+		{
+			LeafParticle p = _particles[i];
+			float dt = (float)delta;
+			
+			// --- Apply Movement ---
+			p.Position.Y += p.FallSpeed * dt;
+			p.Position.X += p.HorizontalDrift * HORIZONTAL_DRIFT_SPEED * dt;
+			
+			// --- Update Drift Timer ---
+			p.DriftTimer -= dt;
+
+			// Check if it's time to change horizontal drift direction
+			if (p.DriftTimer <= 0)
+			{
+				p.HorizontalDrift *= -1; 
+				p.DriftTimer = DRIFT_CHANGE_TIME;
+			}
+
+			// --- Boundary Check: Reset if fallen off screen ---
+			if (p.Position.Y > _viewportSize.Y + p.Size)
+			{
+				p.Position = ResetLeafPosition(p.Size);
+			}
+
+			_particles[i] = p; 
+		}
+		
+		// 2. Redraw the particles on the screen
+		if (_drawingNode != null)
+		{
+			_drawingNode.QueueRedraw();
+		}
+	}
+	
+// --------------------------------------------------------------------------
+// PLAYER SPAWN LOGIC (Unchanged)
+// --------------------------------------------------------------------------
+
+	private void SpawnPlayer()
+	{
+		Node2D player = null; 
+
+		foreach (Node node in GetTree().Root.GetChildren())
+		{
+			if (node.IsInGroup(PlayerGroupName) && node.Name == "CharacterNode" && node is Node2D playerNode)
+			{
+				player = playerNode;
+				break;
+			}
+		}
+
+		if (player == null)
+		{
+			GD.PrintErr("Could not find player in the scene tree!");
+			return;
+		}
+
+		var spawnPoint = GetNodeOrNull<Marker2D>(SpawnMarkerName);
+
+		if (spawnPoint != null)
+		{
+			player.GlobalPosition = spawnPoint.GlobalPosition;
+			GD.Print($"Player successfully spawned at: {player.GlobalPosition}");
+		}
+		else
+		{
+			GD.PrintErr($"Could not find spawn marker: {SpawnMarkerName}. Player may be stuck at (0, 0).");
+		}
+	}
+	
+// --------------------------------------------------------------------------
+// FALLING LEAVES DRAWING LOGIC
+// --------------------------------------------------------------------------
+
+	private void InitializeFallingLeaves()
+	{
+		// 1. Setup the CanvasLayer and the Drawing Node
+		CanvasLayer leavesLayer = new CanvasLayer();
+		leavesLayer.Layer = 100;
+		AddChild(leavesLayer);
+
+		_drawingNode = new Node2D();
+		_drawingNode.Name = "LeavesDrawingNode";
+		_drawingNode.SetProcessMode(Node.ProcessModeEnum.Always); 
+		_drawingNode.Draw += OnLeavesDraw; 
+		leavesLayer.AddChild(_drawingNode);
+		
+		// 2. Populate the particle data list
+		for (int i = 0; i < LEAF_COUNT; i++)
+		{
+			LeafParticle p = new LeafParticle();
+			p.Size = _rng.RandfRange(LEAF_SIZE_MIN, LEAF_SIZE_MAX);
+			p.FallSpeed = _rng.RandfRange(FALL_SPEED_MIN, FALL_SPEED_MAX);
+			
+			// Initial random setup
+			p.Position = ResetLeafPosition(p.Size, true); 
+			p.HorizontalDrift = _rng.Randf() < 0.5f ? 1.0f : -1.0f; 
+			p.DriftTimer = _rng.RandfRange(0.0f, DRIFT_CHANGE_TIME);
+			p.LeafColor = GetRandomLeafColor(); 
+			
+			_particles.Add(p);
+		}
+		
+		GD.Print($"Initialized {LEAF_COUNT} procedural falling leaves.");
+	}
+
+	/// <summary>
+	/// Returns a random color suitable for golden yellow autumn leaves.
+	/// </summary>
+	private Color GetRandomLeafColor()
+	{
+		// Choose from bright, golden yellow shades 
+		int choice = _rng.RandiRange(0, 3);
+		switch (choice)
+		{
+			case 0: return new Color(1.0f, 0.9f, 0.2f, LEAF_OPACITY); // Bright Yellow
+			case 1: return new Color(1.0f, 0.85f, 0.3f, LEAF_OPACITY); // Golden Yellow
+			case 2: return new Color(1.0f, 0.8f, 0.1f, LEAF_OPACITY); // Pale Gold
+			case 3: return new Color(0.9f, 0.7f, 0.0f, LEAF_OPACITY); // Deep Gold
+			default: return new Color(1.0f, 0.85f, 0.25f, LEAF_OPACITY);
+		}
+	}
+
+	/// <summary>
+	/// Custom draw function executed when _drawingNode.QueueRedraw() is called.
+	/// </summary>
+	private void OnLeavesDraw()
+	{
+		foreach (var p in _particles)
+		{
+			// Draw the rectangle using the particle's unique, translucent color
+			Rect2 rect = new Rect2(p.Position - new Vector2(p.Size/2, p.Size/2), new Vector2(p.Size, p.Size));
+			_drawingNode.DrawRect(rect, p.LeafColor);
+		}
+	}
+	
+	/// <summary>
+	/// Calculates a new starting position for a leaf (off-screen top).
+	/// </summary>
+	private Vector2 ResetLeafPosition(float size, bool initialPlacement = false)
+	{
+		float startX = _rng.RandfRange(0, _viewportSize.X);
+		
+		float startY;
+		if (initialPlacement)
+		{
+			startY = _rng.RandfRange(0, _viewportSize.Y); 
+		}
+		else
+		{
+			startY = _rng.RandfRange(-size - 100.0f, -size - 1.0f); 
+		}
+
+		return new Vector2(startX, startY);
+	}
+}

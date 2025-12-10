@@ -1,0 +1,178 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+
+public partial class Level4 : Node2D 
+{
+	private const string PlayerGroupName = "player";
+	private const string SpawnMarkerName = "Level4_Spawn";
+	
+	// --- Mist/Fog Constants (MAX VISIBILITY SETTINGS) ---
+	private const int MIST_PARTICLE_COUNT = 60;         // Increased particle count
+	private const float MIST_SPEED = 5.0f;              // INCREASED SPEED (from 2.0 to 5.0)
+	private const float MIST_OPACITY = 0.15f;           // INCREASED OPACITY (from 0.08 to 0.15)
+	private const float MIST_SIZE_MIN = 60.0f;          // INCREASED SIZE (from 40.0 to 60.0)
+	private const float MIST_SIZE_MAX = 100.0f;         // INCREASED SIZE (from 80.0 to 100.0)
+	private const float MIST_COLOR_VALUE = 0.95f;       
+	private const float MIST_CHANGE_TIME_MIN = 10.0f;   
+	private const float MIST_CHANGE_TIME_MAX = 20.0f;   
+	
+	private RandomNumberGenerator _rng = new RandomNumberGenerator();
+	private Vector2 _viewportSize;
+
+	// Structure to hold particle data
+	private struct MistParticle
+	{
+		public Vector2 Position;
+		public float Size;
+		public Vector2 Velocity;        
+		public float TimeUntilChange;   
+	}
+
+	private List<MistParticle> _particles = new List<MistParticle>();
+	private Node2D _drawingNode;
+
+	public override void _Ready()
+	{
+		GD.Print("Level 4 Loaded. Attempting to spawn player...");
+		
+		_rng.Seed = (ulong)DateTime.Now.Ticks;
+		_viewportSize = GetViewportRect().Size;
+		
+		// 1. --- Player Spawning Logic ---
+		SpawnPlayer();
+
+		// 2. --- Drifting Mist Particle Logic ---
+		InitializeDriftingMist();
+	}
+	
+	// --------------------------------------------------------------------------
+	// MANUAL MOVEMENT LOGIC
+	// --------------------------------------------------------------------------
+
+	public override void _Process(double delta)
+	{
+		// 1. Update Particle Positions and Check for Boundary
+		for (int i = 0; i < _particles.Count; i++)
+		{
+			MistParticle p = _particles[i];
+			
+			p.Position += p.Velocity * (float)delta;
+			p.TimeUntilChange -= (float)delta;
+
+			if (p.TimeUntilChange <= 0)
+			{
+				p.Velocity = GetDriftVelocity();
+				p.TimeUntilChange = _rng.RandfRange(MIST_CHANGE_TIME_MIN, MIST_CHANGE_TIME_MAX);
+			}
+
+			// Wrap around boundary check
+			if (p.Position.X < -p.Size) p.Position.X = _viewportSize.X + p.Size;
+			if (p.Position.X > _viewportSize.X + p.Size) p.Position.X = -p.Size;
+			if (p.Position.Y < -p.Size) p.Position.Y = _viewportSize.Y + p.Size;
+			if (p.Position.Y > _viewportSize.Y + p.Size) p.Position.Y = -p.Size;
+
+			_particles[i] = p;
+		}
+		
+		// 2. Redraw the particles on the screen
+		if (_drawingNode != null)
+		{
+			_drawingNode.QueueRedraw();
+		}
+	}
+	
+	// --------------------------------------------------------------------------
+	// PLAYER SPAWN LOGIC (Unchanged)
+	// --------------------------------------------------------------------------
+
+	private void SpawnPlayer()
+	{
+		Node2D player = null; 
+
+		foreach (Node node in GetTree().Root.GetChildren())
+		{
+			if (node.IsInGroup(PlayerGroupName) && node.Name == "CharacterNode" && node is Node2D playerNode)
+			{
+				player = playerNode;
+				break;
+			}
+		}
+
+		if (player == null)
+		{
+			GD.PrintErr("Could not find player in the scene tree!");
+			return;
+		}
+
+		var spawnPoint = GetNodeOrNull<Marker2D>(SpawnMarkerName);
+
+		if (spawnPoint != null)
+		{
+			player.GlobalPosition = spawnPoint.GlobalPosition;
+			GD.Print($"Player successfully spawned at: {player.GlobalPosition}");
+		}
+		else
+		{
+			GD.PrintErr($"Could not find spawn marker: {SpawnMarkerName}. Player may be stuck at (0, 0).");
+		}
+	}
+	
+	// --------------------------------------------------------------------------
+	// DRIFTING MIST DRAWING LOGIC
+	// --------------------------------------------------------------------------
+
+	private void InitializeDriftingMist()
+	{
+		// 1. Setup the CanvasLayer and the Drawing Node
+		CanvasLayer mistLayer = new CanvasLayer();
+		mistLayer.Layer = 100; // High layer to draw over everything
+		AddChild(mistLayer);
+
+		_drawingNode = new Node2D();
+		_drawingNode.Name = "MistDrawingNode";
+		_drawingNode.SetProcessMode(Node.ProcessModeEnum.Always); 
+		_drawingNode.Draw += OnMistDraw; 
+		mistLayer.AddChild(_drawingNode);
+		
+		// 2. Populate the particle data list
+		for (int i = 0; i < MIST_PARTICLE_COUNT; i++)
+		{
+			MistParticle p = new MistParticle();
+			p.Size = _rng.RandfRange(MIST_SIZE_MIN, MIST_SIZE_MAX);
+			
+			// Initial random setup
+			p.Position = GetRandomPosition(_viewportSize, p.Size);
+			p.Velocity = GetDriftVelocity();
+			p.TimeUntilChange = _rng.RandfRange(MIST_CHANGE_TIME_MIN, MIST_CHANGE_TIME_MAX);
+			
+			_particles.Add(p);
+		}
+		
+		GD.Print($"Initialized {MIST_PARTICLE_COUNT} procedural drifting mist particles.");
+	}
+
+	private void OnMistDraw()
+	{
+		Color drawColor = new Color(MIST_COLOR_VALUE, MIST_COLOR_VALUE, MIST_COLOR_VALUE, MIST_OPACITY);
+		
+		foreach (var p in _particles)
+		{
+			Rect2 rect = new Rect2(p.Position - new Vector2(p.Size/2, p.Size/2), new Vector2(p.Size, p.Size));
+			_drawingNode.DrawRect(rect, drawColor);
+		}
+	}
+	
+	private Vector2 GetDriftVelocity()
+	{
+		float angle = _rng.RandfRange(0, Mathf.Tau);
+		return new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * MIST_SPEED;
+	}
+	
+	private Vector2 GetRandomPosition(Vector2 viewportSize, float size)
+	{
+		float startX = _rng.RandfRange(0, viewportSize.X);
+		float startY = _rng.RandfRange(0, viewportSize.Y);
+		return new Vector2(startX, startY);
+	}
+}

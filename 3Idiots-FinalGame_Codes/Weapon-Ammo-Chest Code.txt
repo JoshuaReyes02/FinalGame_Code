@@ -1,0 +1,161 @@
+using Godot;
+using System;
+
+public partial class AmmoChest : Node2D
+{
+	// --- Config ---
+	[Export] public int AmmoAmount { get; set; } = 60; // Standard ammo amount (e.g., Pistol)
+	[Export] public string InteractAction { get; set; } = "interact"; 
+	
+	private bool _playerInRange = false;
+	private bool _isOpened = false;
+	private bool _isAnimationPlaying = false; 
+
+	private AnimatedSprite2D _sprite;
+	private Area2D _area;
+	
+	// Animation names
+	private const string OPEN_ANIMATION = "open";
+
+	// 💡 NEW: Define colors for the glow effect
+	private readonly Color GLOW_COLOR = new Color(1.5f, 1.5f, 1.0f); // Bright yellow-white for glow (HDR color)
+	private readonly Color DEFAULT_COLOR = Colors.White; // Default unmodulated color
+
+	public override void _Ready()
+	{
+		// Node setup
+		_sprite = GetNode<AnimatedSprite2D>("AnimatedSprite2D");
+		_area = GetNode<Area2D>("Area2D");
+		
+		// 💡 NEW: Ensure the sprite starts with the default color (no glow)
+		_sprite.SelfModulate = DEFAULT_COLOR;
+
+		// Connect interaction signals
+		_area.BodyEntered += OnBodyEntered;
+		_area.BodyExited += OnBodyExited;
+		
+		// Connect the AnimationFinished signal
+		_sprite.AnimationFinished += OnAnimationFinished;
+
+		// Set initial closed state using frame 0 of the "open" animation
+		if (_sprite.SpriteFrames.HasAnimation(OPEN_ANIMATION))
+		{
+			_sprite.Animation = OPEN_ANIMATION;
+			_sprite.Frame = 0;
+		}
+		else
+		{
+			GD.PrintErr($"AmmoChest is missing the required animation: {OPEN_ANIMATION}. The chest will not function correctly.");
+		}
+	}
+
+	private void SetToOpenedState()
+	{
+		_isOpened = true;
+		
+		// Set animation to the last frame of "open"
+		if (_sprite.SpriteFrames.HasAnimation(OPEN_ANIMATION))
+		{
+			_sprite.Play(OPEN_ANIMATION);
+			// Stop and hold on the last frame
+			_sprite.Frame = _sprite.SpriteFrames.GetFrameCount(OPEN_ANIMATION) - 1;
+			_sprite.Stop();
+		}
+		_area.Monitoring = false;
+		
+		// 💡 NEW: Apply the glow color to the existing sprite
+		_sprite.SelfModulate = GLOW_COLOR;
+	}
+
+	private void OnBodyEntered(Node2D body)
+	{
+		if (body.IsInGroup("player"))
+			_playerInRange = true;
+	}
+
+	private void OnBodyExited(Node2D body)
+	{
+		if (body.IsInGroup("player"))
+			_playerInRange = false;
+	}
+
+	public override void _Process(double delta)
+	{
+		// Check for interaction only if player is in range, chest is closed, and no animation is running
+		if (_playerInRange && !_isOpened && !_isAnimationPlaying && Input.IsActionJustPressed(InteractAction))
+		{
+			OpenChest();
+		}
+	}
+
+	private void OpenChest()
+	{
+		_isOpened = true; 
+		_isAnimationPlaying = true;
+		
+		// Start playing the open animation
+		if (_sprite.SpriteFrames.HasAnimation(OPEN_ANIMATION))
+		{
+			_sprite.Animation = OPEN_ANIMATION; 
+			_sprite.Play();
+			GD.Print("Playing 'open' animation.");
+		}
+		else
+		{
+			GD.PrintErr("FATAL: Cannot play 'open' animation. Check SpriteFrames resource.");
+			_isAnimationPlaying = false;
+		}
+		
+		// 💡 NEW: Apply the glow color to the existing sprite when opened
+		// This simulates a glow without adding a new child node.
+		_sprite.SelfModulate = GLOW_COLOR;
+		GD.Print("Chest sprite modulated to glow color.");
+
+		GiveReward();
+		_area.Monitoring = false;
+	}
+
+	/// <summary>
+	/// Manually stops the "open" animation on its last frame.
+	/// </summary>
+	private void OnAnimationFinished()
+	{
+		if (_sprite.Animation == OPEN_ANIMATION)
+		{
+			int frameCount = _sprite.SpriteFrames.GetFrameCount(OPEN_ANIMATION);
+			_sprite.Stop();
+			_sprite.Frame = frameCount - 1; 
+			_isAnimationPlaying = false;
+			GD.Print($"Animation '{OPEN_ANIMATION}' finished and locked on last frame."); 
+		}
+	}
+
+	private void GiveReward()
+	{
+		// Use the correct Godot 4 method for getting a node in a group
+		var player = GetTree().GetFirstNodeInGroup("player") as CharacterBody2D; 
+
+		if (player != null && player.HasMethod("GiveAmmo"))
+		{
+			// Assuming your player class has a method called 'GiveAmmo'
+			player.Call("GiveAmmo", AmmoAmount);
+			GD.Print($"Ammo Chest opened. Gave {AmmoAmount} Ammo.");
+		}
+		else
+		{
+			GD.PrintErr("Ammo Chest could not find the player or the player is missing the 'GiveAmmo' method.");
+		}
+	}
+	
+	// Helper method to safely get a node (unmodified)
+	private bool TryGetNode<T>(string name, out T node) where T : Node
+	{
+		if (HasNode(name))
+		{
+			node = GetNode<T>(name);
+			return true;
+		}
+		node = null;
+		return false;
+	}
+}

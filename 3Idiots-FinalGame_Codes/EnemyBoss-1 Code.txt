@@ -1,0 +1,563 @@
+using Godot;
+using System;
+using System.Linq;
+
+public partial class Enemyboss1 : CharacterBody2D
+{
+	// ★ CRITICAL FIX: Signal declaration added here
+	[Signal]
+	public delegate void KilledEventHandler();
+
+	[Export] public float Speed { get; set; } = 370f;
+	[Export] public int AttackDamage { get; set; } = 2;
+	[Export] public float AttackCooldown { get; set; } = 1.5f;
+	[Export] public float AttackRange { get; set; } = 200f;
+	[Export] public int MaxHealth { get; set; } = 1800;
+	[Export] public float DetectionRadius { get; set; } = 1200f;
+	[Export] public float WanderSpeedMultiplier { get; set; } = 0.60f;
+	
+	[Export] public float WallDetectionDistance { get; set; } = 100f;
+	private const float WallAvoidanceAngle = Mathf.Pi / 20f; // 60 degrees
+	private const float AttackHitDelay = 0.1f; // Time in seconds when the attack damage should land
+
+	// Constants for the damage flash effect
+	private static readonly Color DAMAGE_FLASH_COLOR = new Color(1.0f, 0.2f, 0.2f); // Bright Red
+	private const float DAMAGE_FLASH_DURATION = 0.15f; // Duration of the red flash in seconds
+
+	[Export] public string AttackAnimationName { get; set; } = "attack";
+	[Export] public string AttackAnimationNameLeft { get; set; } = "attack_left"; 
+	[Export] public string AttackAnimationNameRight { get; set; } = "attack_right"; 
+	[Export] public string AttackAnimationNameBottom { get; set; } = "attack_bottom";
+	// ★ NEW EXPORT: Attack Top
+	[Export] public string AttackAnimationNameTop { get; set; } = "attack_top";
+
+	// ★ NEW: Health Bar Visibility Export Property
+	[Export] public float HealthBarVisibilityTime { get; set; } = 3.0f; 
+
+	private AnimatedSprite2D _sprite;
+	private Random _rng = new Random();
+	
+	private RayCast2D _rayFwd;
+	private RayCast2D _rayLeft;
+	private RayCast2D _rayRight;
+	
+	private Timer _damageTimer; // Timer to precisely time the hit point
+	private Timer _flashTimer;    // Timer for controlling the flash duration
+	private Timer _healthBarVisibleTimer; // ★ NEW: Timer to hide the health bar
+	
+	private float _wanderAngle = 0f;
+	private float _wanderChangeDelay = 0f;
+
+	private int _currentHealth;
+	private float _attackCooldownTimer = 0f;
+
+	private bool _isAttacking = false;
+
+	private CharacterNode _player;
+	private float _dt;
+
+	private Timer _playerSearchTimer;
+
+	private Vector2 _lastDirection = Vector2.Down;
+
+	private const float VerticalDominanceBias = 0.15f;
+	
+	// ★ NEW: Health Bar Properties
+	private Node2D _healthBarContainer;
+	private ProgressBar _healthBar;
+	private const float HealthBarHeightOffset = -60f; // Positioned high above the boss
+	private const float HealthBarWidth = 200f; // Wide bar for a boss
+	private const float HealthBarHeight = 12f;
+	// ★ END NEW
+
+	public override void _Ready()
+	{
+		AddToGroup("enemy");
+
+		_sprite = GetNodeOrNull<AnimatedSprite2D>("AnimatedSprite2D");
+		
+		_rayFwd = GetNodeOrNull<RayCast2D>("RayCastFwd");
+		_rayLeft = GetNodeOrNull<RayCast2D>("RayCastLeft");
+		_rayRight = GetNodeOrNull<RayCast2D>("RayCastRight");
+		
+		// Setup Damage Timer for precise hit timing
+		_damageTimer = new Timer();
+		AddChild(_damageTimer);
+		_damageTimer.OneShot = true;
+		_damageTimer.WaitTime = AttackHitDelay;
+		_damageTimer.Timeout += ApplyDamage;
+
+		// Setup Flash Timer
+		_flashTimer = new Timer();
+		AddChild(_flashTimer);
+		_flashTimer.OneShot = true;
+		_flashTimer.WaitTime = DAMAGE_FLASH_DURATION;
+		_flashTimer.Timeout += ResetFlashColor; 
+
+		// Initialize RayCast target positions
+		if (_rayFwd != null) _rayFwd.TargetPosition = Vector2.Right * WallDetectionDistance;
+		if (_rayLeft != null) _rayLeft.TargetPosition = Vector2.Right.Rotated(-WallAvoidanceAngle / 2) * WallDetectionDistance;
+		if (_rayRight != null) _rayRight.TargetPosition = Vector2.Right.Rotated(WallAvoidanceAngle / 2) * WallDetectionDistance;
+
+		if (_sprite != null)
+		{
+			_sprite.Connect(
+				AnimatedSprite2D.SignalName.AnimationFinished,
+				new Callable(this, nameof(OnAttackAnimationFinished))
+			);
+			// Ensure the sprite starts with default color
+			_sprite.SelfModulate = Colors.White; 
+		}
+
+		_currentHealth = MaxHealth;
+		
+		// ★ NEW: Health Bar Setup
+		CreateHealthBar();
+		// ★ NEW: Health Bar Visibility Timer Setup
+		_healthBarVisibleTimer = new Timer();
+		AddChild(_healthBarVisibleTimer);
+		_healthBarVisibleTimer.OneShot = true;
+		_healthBarVisibleTimer.WaitTime = HealthBarVisibilityTime;
+		_healthBarVisibleTimer.Timeout += HideHealthBar;
+		// ★ END NEW
+
+		_wanderAngle = (float)(_rng.NextDouble() * Math.PI * 2);
+		_wanderChangeDelay = 1f + (float)_rng.NextDouble() * 2f;
+
+		_playerSearchTimer = new Timer();
+		AddChild(_playerSearchTimer);
+		_playerSearchTimer.WaitTime = 2.0f;
+		_playerSearchTimer.Timeout += FindPlayer;
+		_playerSearchTimer.Start();
+
+		FindPlayer();
+	}
+	
+	/// <summary>
+	/// Creates and styles the health bar UI element.
+	/// </summary>
+	private void CreateHealthBar()
+	{
+		// 1. Container for positioning (Node2D)
+		_healthBarContainer = new Node2D();
+		_healthBarContainer.Name = "HealthBarContainer";
+		_healthBarContainer.Position = new Vector2(0, HealthBarHeightOffset);
+		AddChild(_healthBarContainer);
+
+		// 2. The Health Bar itself (ProgressBar)
+		_healthBar = new ProgressBar();
+		_healthBar.Name = "HealthBar";
+		
+		_healthBar.Size = new Vector2(HealthBarWidth, HealthBarHeight);
+		_healthBar.MinValue = 0;
+		_healthBar.MaxValue = MaxHealth;
+		_healthBar.Value = _currentHealth;
+		_healthBar.ShowPercentage = false;
+		
+		// Center the control node within its Node2D parent
+		_healthBar.Position = new Vector2(-HealthBarWidth / 2, 0);
+
+		// --- Custom Styling for Boss Health Bar (e.g., Bright Blue) ---
+		
+		// 3. Background Style (Dark Grey/Black)
+		StyleBoxFlat backgroundStyle = new StyleBoxFlat();
+		backgroundStyle.SetBgColor(new Color(0.1f, 0.1f, 0.2f)); 
+		backgroundStyle.SetCornerRadius((Godot.Corner)0, 3); 
+		backgroundStyle.SetCornerRadius((Godot.Corner)1, 3); 
+		backgroundStyle.SetCornerRadius((Godot.Corner)2, 3); 
+		backgroundStyle.SetCornerRadius((Godot.Corner)3, 3); 
+		_healthBar.AddThemeStyleboxOverride("background", backgroundStyle);
+
+		// 4. Fill Style (Blue/Cyan for high visibility boss health)
+		StyleBoxFlat fillStyle = new StyleBoxFlat();
+		fillStyle.SetBgColor(new Color(0.6f, 0.1f, 0.1f)); 
+		fillStyle.SetCornerRadius((Godot.Corner)0, 3); 
+		fillStyle.SetCornerRadius((Godot.Corner)1, 3); 
+		fillStyle.SetCornerRadius((Godot.Corner)2, 3); 
+		fillStyle.SetCornerRadius((Godot.Corner)3, 3); 
+		_healthBar.AddThemeStyleboxOverride("fill", fillStyle);
+		
+		// ------------------------------------
+		
+		// Start hidden
+		_healthBar.Visible = false;
+
+		_healthBarContainer.AddChild(_healthBar);
+	}
+	
+	/// <summary>
+	/// Hides the health bar when the visibility timer runs out.
+	/// </summary>
+	private void HideHealthBar()
+	{
+		if (_healthBar != null && _currentHealth < MaxHealth)
+		{
+			_healthBar.Visible = false;
+		}
+	}
+
+	public void TakeDamage(int dmg)
+	{
+		// Start the damage flash effect
+		if (_sprite != null)
+		{
+			_sprite.SelfModulate = DAMAGE_FLASH_COLOR;
+			_flashTimer.Start();
+		}
+
+		_currentHealth -= dmg;
+		_currentHealth = Mathf.Clamp(_currentHealth, 0, MaxHealth);
+		
+		// ★ NEW: Health Bar Update and Timer Reset
+		if (_healthBar != null)
+		{
+			_healthBar.Value = _currentHealth;
+			
+			// 1. Make the bar visible immediately
+			_healthBar.Visible = true; 
+
+			// 2. Reset and start the timer
+			_healthBarVisibleTimer.Stop();
+			if (_currentHealth > 0)
+			{
+				_healthBarVisibleTimer.Start();
+			}
+		}
+		// ★ END NEW
+
+		if (_currentHealth <= 0)
+			Die();
+	}
+	
+	private void ResetFlashColor()
+	{
+		if (_sprite != null)
+		{
+			_sprite.SelfModulate = Colors.White;
+		}
+	}
+
+	private void FindPlayer()
+	{
+		_player = GetTree().GetNodesInGroup("player").FirstOrDefault() as CharacterNode;
+	}
+
+	public override void _PhysicsProcess(double delta)
+	{
+		_dt = (float)delta;
+		_attackCooldownTimer -= _dt;
+
+		if (_player == null || !IsInstanceValid(_player))
+			FindPlayer();
+
+		Vector2 velocity = Vector2.Zero;
+
+		if (_player != null && IsInstanceValid(_player))
+		{
+			Vector2 toPlayer = _player.GlobalPosition - GlobalPosition;
+			float distance = toPlayer.Length();
+
+			// ATTACK STATE
+			if (distance <= AttackRange)
+			{
+				if (!_isAttacking)
+					StartAttackSequence(toPlayer.Normalized());
+
+				if (_isAttacking)
+				{
+					velocity = Vector2.Zero;
+				}
+				else
+				{
+					// If not attacking, move into range to ensure the attack connects
+					velocity = toPlayer.Normalized() * Speed; 
+				}
+			}
+			// CHASE STATE
+			else if (distance <= DetectionRadius)
+			{
+				velocity = toPlayer.Normalized() * Speed;
+				_wanderChangeDelay = 1f;
+			}
+			// WANDER
+			else
+			{
+				velocity = GetWanderVelocity();
+			}
+		}
+		else
+		{
+			velocity = GetWanderVelocity();
+		}
+
+		if (!_isAttacking)
+		{
+			Velocity = velocity;
+			MoveAndSlide();
+
+			bool moving = Velocity.LengthSquared() > 0.01f;
+			if (moving)
+				_lastDirection = Velocity.Normalized();
+
+			UpdateSpriteOrientation(
+				moving ? Velocity.Normalized() : _lastDirection,
+				moving
+			);
+		}
+		else
+		{
+			Velocity = Vector2.Zero;
+			MoveAndSlide();
+		}
+	}
+
+	private void UpdateSpriteOrientation(Vector2 direction, bool isMoving)
+	{
+		if (_isAttacking) return;
+
+		string baseAnim = isMoving ? "walk" : "idle";
+		string prefix = "";
+
+		float absX = Mathf.Abs(direction.X);
+		float absY = Mathf.Abs(direction.Y);
+
+		// Logic for diagonal/vertical animations
+		if (absY > absX + VerticalDominanceBias)
+		{
+			_sprite.FlipH = false;
+			prefix = (direction.Y < 0) ? "top_angle_" : "bottom_angle_";
+		}
+		else
+		{
+			_sprite.FlipH = direction.X < 0;
+		}
+
+		PlayAnim(prefix + baseAnim);
+	}
+
+	private Vector2 GetWanderVelocity()
+	{
+		_wanderChangeDelay -= _dt;
+
+		// Wall Avoidance Logic
+		if (_rayFwd != null && _rayLeft != null && _rayRight != null)
+		{
+			_rayFwd.Rotation = _wanderAngle;
+			_rayLeft.Rotation = _wanderAngle - WallAvoidanceAngle;
+			_rayRight.Rotation = _wanderAngle + WallAvoidanceAngle;
+			
+			_rayFwd.ForceRaycastUpdate();
+			_rayLeft.ForceRaycastUpdate();
+			_rayRight.ForceRaycastUpdate();
+			
+			if (_rayFwd.IsColliding() || _rayLeft.IsColliding() || _rayRight.IsColliding())
+			{
+				bool leftBlocked = _rayLeft.IsColliding();
+				bool rightBlocked = _rayRight.IsColliding();
+
+				if (leftBlocked && !rightBlocked)
+				{
+					_wanderAngle += WallAvoidanceAngle; 
+				}
+				else if (rightBlocked && !leftBlocked)
+				{
+					_wanderAngle -= WallAvoidanceAngle; 
+				}
+				else 
+				{
+					// Back up and choose a random direction
+					if (_rng.NextDouble() < 0.5)
+						_wanderAngle += WallAvoidanceAngle; 
+					else
+						_wanderAngle -= WallAvoidanceAngle;
+				}
+				
+				_wanderChangeDelay = 0.5f; 
+			}
+		}
+
+		// Random Wander change logic
+		if (_wanderChangeDelay <= 0f)
+		{
+			float randomShift = (float)(_rng.NextDouble() * 0.5 - 0.25);
+			_wanderAngle += randomShift;
+			_wanderChangeDelay = 1f + (float)_rng.NextDouble() * 2f;
+		}
+
+		Vector2 dir = new Vector2(Mathf.Cos(_wanderAngle), Mathf.Sin(_wanderAngle));
+		return dir.Normalized() * Speed * WanderSpeedMultiplier;
+	}
+
+	private void StartAttackSequence(Vector2 directionToPlayer)
+	{
+		if (_attackCooldownTimer > 0f) return;
+
+		_isAttacking = true;
+		_attackCooldownTimer = AttackCooldown;
+
+		string targetAttackAnim = AttackAnimationName; 
+		float dotProductUp = Vector2.Up.Dot(directionToPlayer); // Dot product for Upward direction
+		float dotProductDown = Vector2.Down.Dot(directionToPlayer); // Dot product for Downward direction
+		
+		const float VerticalThreshold = 0.8f; // Requires the attack to be strongly vertical (e.g., within 36 degrees of straight up/down)
+
+		// ★ MODIFIED LOGIC START
+
+		// 1. Check for Top Attack
+		if (dotProductUp > VerticalThreshold) 
+		{
+			_sprite.FlipH = false;
+			targetAttackAnim = AttackAnimationNameTop;
+		}
+		// 2. Check for Bottom Attack
+		else if (dotProductDown > VerticalThreshold) 
+		{
+			_sprite.FlipH = false;
+			targetAttackAnim = AttackAnimationNameBottom;
+		}
+		// 3. Fall back to Horizontal Attacks
+		else if (directionToPlayer.X < 0)
+		{
+			// Attacking left
+			_sprite.FlipH = false; 
+			targetAttackAnim = AttackAnimationNameLeft;
+		}
+		else
+		{
+			// Attacking right
+			_sprite.FlipH = false; 
+			targetAttackAnim = AttackAnimationNameRight;
+		}
+		
+		// Fallback to the generic animation if the specific one is not available
+		if (_sprite != null && !_sprite.SpriteFrames.HasAnimation(targetAttackAnim))
+		{
+			targetAttackAnim = AttackAnimationName; // Fallback to generic animation
+			
+			// If falling back, re-apply generic flipping logic
+			if (_sprite != null)
+				_sprite.FlipH = directionToPlayer.X < 0;
+		}
+		// ★ MODIFIED LOGIC END
+
+		PlayAnim(targetAttackAnim);
+		
+		// Start the timer to apply damage at the point of impact
+		_damageTimer.Start();
+	}
+
+	private void ApplyDamage()
+	{
+		// This runs after the AttackHitDelay (0.3s) simulating the swing time.
+		if (_player != null && IsInstanceValid(_player))
+		{
+			float dist = (_player.GlobalPosition - GlobalPosition).Length();
+			
+			// Check if the player is still within attack range at the hit moment
+			if (dist <= AttackRange) 
+			{
+				_player.TakeDamage(AttackDamage);
+			}
+		}
+	}
+
+	private void OnAttackAnimationFinished()
+	{
+		// ★ MODIFIED: Check for all five possible attack animation names
+		if (_sprite.Animation == AttackAnimationName ||
+			_sprite.Animation == AttackAnimationNameLeft ||
+			_sprite.Animation == AttackAnimationNameRight ||
+			_sprite.Animation == AttackAnimationNameBottom ||
+			_sprite.Animation == AttackAnimationNameTop)
+		{
+			_isAttacking = false;
+		}
+	}
+
+	private void Die()
+	{
+		// Emit the Killed signal here for the GameScene manager to track the objective!
+		EmitSignal(SignalName.Killed);
+		
+		// Clean up connections
+		if (_sprite != null &&
+			_sprite.IsConnected(
+				AnimatedSprite2D.SignalName.AnimationFinished,
+				new Callable(this, nameof(OnAttackAnimationFinished))
+			))
+		{
+			_sprite.Disconnect(
+				AnimatedSprite2D.SignalName.AnimationFinished,
+				new Callable(this, nameof(OnAttackAnimationFinished))
+			);
+		}
+
+		if (_playerSearchTimer != null)
+		{
+			_playerSearchTimer.Stop();
+			_playerSearchTimer.QueueFree();
+		}
+
+		// Clean up timers
+		if (_damageTimer != null)
+		{
+			_damageTimer.Stop();
+			_damageTimer.QueueFree();
+		}
+		if (_flashTimer != null)
+		{
+			_flashTimer.Stop();
+			_flashTimer.QueueFree();
+		}
+		
+		// ★ NEW: Clean up the health bar visibility timer
+		if (_healthBarVisibleTimer != null)
+		{
+			_healthBarVisibleTimer.Stop();
+			_healthBarVisibleTimer.QueueFree();
+		}
+		
+		// ★ NEW: Clean up the health bar container
+		if (_healthBarContainer != null)
+		{
+			_healthBarContainer.QueueFree();
+		}
+
+		QueueFree();
+	}
+
+	private void PlayAnim(string anim)
+	{
+		if (_sprite == null) return;
+
+		// ★ MODIFIED: Check for all five possible attack animation names
+		if (anim == AttackAnimationName || anim == AttackAnimationNameLeft || anim == AttackAnimationNameRight || anim == AttackAnimationNameBottom || anim == AttackAnimationNameTop)
+		{
+			if (_sprite.Animation != anim)
+			{
+				_sprite.Play(anim, customSpeed: 1.0f, fromEnd: false);
+				_sprite.Frame = 0;
+			}
+			return;
+		}
+
+		if (_isAttacking) return;
+
+		string target = anim;
+
+		// Fallback logic for animation names (e.g., if "top_angle_walk" is missing, use "walk")
+		if (!_sprite.SpriteFrames.HasAnimation(target))
+		{
+			target = anim.Contains("walk") ? "walk" :
+					 anim.Contains("idle") ? "idle" : target;
+
+			if (!_sprite.SpriteFrames.HasAnimation(target))
+				return;
+		}
+
+		if (_sprite.Animation != target)
+			_sprite.Play(target);
+	}
+
+	private void _on_attack_area_body_entered(Node2D body) {}
+}

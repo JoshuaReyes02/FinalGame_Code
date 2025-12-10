@@ -1,0 +1,196 @@
+using Godot;
+using System;
+
+public partial class RifleAmmoChest : Node2D
+{
+	// --- Config ---
+	[Export] public int AmmoAmount { get; set; } = 60;
+	[Export] public string InteractAction { get; set; } = "interact"; // Ensure this is exactly "interact"
+	
+	private bool _playerInRange = false;
+	private bool _isOpened = false;
+	private bool _isAnimationPlaying = false; 
+
+	private AnimatedSprite2D _sprite;
+	private Area2D _area;
+	
+	// Animation names
+	private const string OPEN_ANIMATION = "open";
+
+	// Define colors for the glow effect
+	private readonly Color GLOW_COLOR = new Color(1.5f, 1.5f, 1.0f); 
+	private readonly Color DEFAULT_COLOR = Colors.White; // Default unmodulated color
+
+	// --- Floating Text Config ---
+	private const string ACQUIRED_TEXT = "Rifle Ammo Acquired!";
+	private const float TEXT_DISPLAY_TIME = 1.5f; // How long the text stays visible
+
+	public override void _Ready()
+	{
+		// Node setup
+		_sprite = GetNode<AnimatedSprite2D>("AnimatedSprite2D");
+		_area = GetNode<Area2D>("Area2D");
+		
+		// Ensure the sprite starts with the default color (no glow)
+		_sprite.SelfModulate = DEFAULT_COLOR;
+
+		// Connect interaction signals
+		_area.BodyEntered += OnBodyEntered;
+		_area.BodyExited += OnBodyExited;
+		
+		// Connect the AnimationFinished signal
+		_sprite.AnimationFinished += OnAnimationFinished;
+
+		// 1. Initial State Check: Set to closed state (frame 0 of "open" animation).
+		if (_sprite.SpriteFrames.HasAnimation(OPEN_ANIMATION))
+		{
+			_sprite.Animation = OPEN_ANIMATION;
+			_sprite.Frame = 0;
+		}
+		else
+		{
+			GD.PrintErr($"RifleAmmoChest is missing the required animation: {OPEN_ANIMATION}. The chest will not function correctly.");
+		}
+	}
+
+	private void SetToOpenedState()
+	{
+		_isOpened = true;
+		
+		// Set animation to the last frame of "open"
+		if (_sprite.SpriteFrames.HasAnimation(OPEN_ANIMATION))
+		{
+			_sprite.Play(OPEN_ANIMATION);
+			// Stop and hold on the last frame
+			_sprite.Frame = _sprite.SpriteFrames.GetFrameCount(OPEN_ANIMATION) - 1;
+			_sprite.Stop();
+		}
+		_area.Monitoring = false;
+		
+		// Apply the glow color to the existing sprite
+		_sprite.SelfModulate = GLOW_COLOR;
+	}
+
+	private void OnBodyEntered(Node2D body)
+	{
+		// 🔑 Ensure the body is your player (e.g., in the "player" group)
+		if (body.IsInGroup("player"))
+			_playerInRange = true;
+	}
+
+	private void OnBodyExited(Node2D body)
+	{
+		if (body.IsInGroup("player"))
+			_playerInRange = false;
+	}
+
+	// 🔑 FIX: Moving interaction check from _Process to _PhysicsProcess
+	public override void _PhysicsProcess(double delta)
+	{
+		// Check for interaction only if player is in range, chest is closed, and no animation is running
+		if (_playerInRange && !_isOpened && !_isAnimationPlaying && Input.IsActionJustPressed(InteractAction))
+		{
+			OpenChest();
+		}
+	}
+
+	private void OpenChest()
+	{
+		_isOpened = true; // Prevents the chest from being opened again during this scene load
+		_isAnimationPlaying = true; // Block interaction until animation finishes
+		
+		// Start playing the open animation
+		if (_sprite.SpriteFrames.HasAnimation(OPEN_ANIMATION))
+		{
+			_sprite.Animation = OPEN_ANIMATION; 
+			_sprite.Play();
+			GD.Print("Playing 'open' animation.");
+		}
+		else
+		{
+			GD.PrintErr("FATAL: Cannot play 'open' animation. Check SpriteFrames resource.");
+			_isAnimationPlaying = false;
+		}
+		
+		// Apply the glow color to the existing sprite when opened
+		_sprite.SelfModulate = GLOW_COLOR;
+		GD.Print("Rifle Chest sprite modulated to glow color.");
+
+		GiveReward();
+		DisplayAcquiredText(); // Call the function to display the text
+		_area.Monitoring = false;
+	}
+
+	/// <summary>
+	/// Creates a temporary Label node above the chest to display the acquired message,
+	/// positioned very close to the chest.
+	/// </summary>
+	private void DisplayAcquiredText()
+	{
+		// 1. Create the Label node
+		var label = new Label();
+		label.Text = ACQUIRED_TEXT;
+		label.HorizontalAlignment = HorizontalAlignment.Center;
+		label.Modulate = Colors.LightGreen; 
+
+		// 2. Position the Label
+		label.Position = new Vector2(0, -15); 
+		label.SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter;
+		
+		// 3. Add the Label as a child to the chest
+		AddChild(label);
+		
+		// 4. Use a Tween for a simple float-up, fade-out, and destruction effect
+		var tween = CreateTween();
+		
+		// Float up slightly (e.g., 20 pixels total movement, from -15 to -35)
+		tween.TweenProperty(label, "position", label.Position + new Vector2(0, -20), TEXT_DISPLAY_TIME)
+			.SetTrans(Tween.TransitionType.Quad)
+			.SetEase(Tween.EaseType.Out);
+			
+		// Fade out in parallel
+		tween.Parallel().TweenProperty(label, "modulate:a", 0.0f, TEXT_DISPLAY_TIME - 0.5f)
+			.SetDelay(0.25f);
+			
+		// 5. Remove the node when the effect is finished
+		tween.TweenCallback(Callable.From(() =>
+		{
+			if (IsInstanceValid(label))
+			{
+				label.QueueFree();
+			}
+		}));
+	}
+
+	/// <summary>
+	/// Manually stops the "open" animation on its last frame.
+	/// </summary>
+	private void OnAnimationFinished()
+	{
+		if (_sprite.Animation == OPEN_ANIMATION)
+		{
+			int frameCount = _sprite.SpriteFrames.GetFrameCount(OPEN_ANIMATION);
+			_sprite.Stop();
+			_sprite.Frame = frameCount - 1; 
+			_isAnimationPlaying = false;
+			GD.Print($"Animation '{OPEN_ANIMATION}' finished and locked on last frame."); 
+		}
+	}
+
+	private void GiveReward()
+	{
+		// NOTE: Assuming 'CharacterNode' is the correct custom class name for your player.
+		var player = GetTree().GetFirstNodeInGroup("player") as CharacterNode;
+
+		if (player != null)
+		{
+			// The player's GiveAmmo method will be called.
+			player.GiveAmmo(AmmoAmount);
+			GD.Print($"Rifle Ammo Chest opened. Gave {AmmoAmount} Ammo.");
+		}
+		else
+		{
+			GD.PrintErr("Rifle Ammo Chest could not find the CharacterNode (player).");
+		}
+	}
+}

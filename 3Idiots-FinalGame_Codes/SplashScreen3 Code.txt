@@ -1,0 +1,62 @@
+using Godot;
+
+public partial class Splashscreen3 : Node2D
+{
+	private AnimationPlayer animationPlayer;
+	private bool isSkipping = false; // <--- To stop normal sequence if skipped
+
+	public override void _Ready()
+	{
+		animationPlayer = GetNode<AnimationPlayer>("AnimationPlayer");
+		RunSequence();
+	}
+
+	public override void _Process(double delta)
+	{
+		// --- PRESS SPACE TO SKIP ---
+		if (Input.IsActionJustPressed("ui_accept") && !isSkipping)
+		{
+			SkipSplash();
+		}
+	}
+
+	private async void RunSequence()
+	{
+		animationPlayer.Play("fade in");
+		await ToSignal(animationPlayer, AnimationPlayer.SignalName.AnimationFinished);
+
+		if (isSkipping) return;
+
+		await ToSignal(GetTree().CreateTimer(1.0f), "timeout");
+		if (isSkipping) return;
+
+		await ToSignal(GetTree().CreateTimer(1.5f), "timeout");
+		if (isSkipping) return;
+
+		animationPlayer.Play("fade out");
+		await ToSignal(animationPlayer, AnimationPlayer.SignalName.AnimationFinished);
+
+		if (isSkipping) return;
+
+		ChangeScene();
+	}
+
+	private async void SkipSplash()
+	{
+		isSkipping = true;
+
+		// Immediately fade out
+		animationPlayer.Play("fade out");
+		await ToSignal(animationPlayer, AnimationPlayer.SignalName.AnimationFinished);
+
+		ChangeScene();
+	}
+
+	private void ChangeScene()
+	{
+		Error err = GetTree().ChangeSceneToFile("res://GameScene/splashscreen4.tscn");
+
+		if (err != Error.Ok)
+			GD.PrintErr($"Failed to change scene: {err}");
+	}
+}

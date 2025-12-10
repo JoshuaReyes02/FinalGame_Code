@@ -1,0 +1,620 @@
+using Godot;
+using System;
+using System.Linq;
+
+public partial class FinalBoss : CharacterBody2D
+{
+	// ★ New: Signal declaration for death event
+	[Signal]
+	public delegate void KilledEventHandler();
+	
+	// ★ NEW: Boss Atmosphere Constants
+	private readonly Color SCARY_BASE_COLOR = new Color(0.85f, 0.7f, 0.9f, 1.0f); // Subtle purplish/demonic hue
+	private readonly Color SCARY_HURT_COLOR = new Color(1.0f, 0.0f, 0.0f, 1.0f); // Deep Crimson for damage flash
+	private readonly Color SCARY_HEALTH_COLOR = new Color(0.8f, 0.0f, 0.0f);    // Blood Red for health bar fill
+
+
+	// Enum to define the different attack patterns the boss can use
+	private enum AttackMode
+	{
+		Circular,
+		Homing,
+		RandomSpray,
+		CardinalShot,
+		ExpandingCircle 
+	}
+	private AttackMode _currentAttackMode;
+
+	[Export] public float Speed { get; set; } = 150f;
+	[Export] public int AttackDamage { get; set; } = 1;
+	[Export] public float AttackCooldown { get; set; } = 0.5f;
+	[Export] public float AttackRange { get; set; } = 800f;
+	[Export] public int MaxHealth { get; set; } = 4500;
+	[Export] public float DetectionRadius { get; set; } = 1000f;
+	[Export] public float WanderSpeedMultiplier { get; set; } = 0.20f;
+	
+	[Export] public float WallDetectionDistance { get; set; } = 50f;
+	private const float WallAvoidanceAngle = Mathf.Pi / 20f;
+
+	[Export] public string AttackAnimationName { get; set; } = "attack";
+	[Export] public PackedScene ProjectileScene { get; set; }
+
+	// Circular Shot Properties
+	[Export] public int BurstCount { get; set; } = 8;
+	// Distance projectiles spawn away from the boss center
+	[Export] public float ProjectileSpawnDistance { get; set; } = 50f;
+	
+	// ★ Health Bar Properties
+	[Export] public float HealthBarVisibilityTime { get; set; } = 3.0f; 
+	private const float HealthBarHeightOffset = -130f; 
+	private const float HealthBarWidth = 250f; 
+	private const float HealthBarHeight = 14f;
+
+	private AnimatedSprite2D _sprite;
+	private Random _rng = new Random();
+	
+	private RayCast2D _rayFwd;
+	private RayCast2D _rayLeft;
+	private RayCast2D _rayRight;
+	
+	private float _wanderAngle = 0f;
+	private float _wanderChangeDelay = 0f;
+
+	private int _currentHealth;
+	private float _attackCooldownTimer = 0f;
+
+	private CharacterNode _player; // Uses CharacterNode
+	private float _dt;
+
+	private Timer _playerSearchTimer;
+	// ★ Health Bar Timers/Nodes
+	private Timer _healthBarVisibleTimer;
+	private Node2D _healthBarContainer;
+	private ProgressBar _healthBar;
+
+
+	private Vector2 _lastDirection = Vector2.Down;
+
+	private const float VerticalDominanceBias = 0.15f;
+	
+	public override void _Ready()
+	{
+		AddToGroup("enemy");
+
+		_sprite = GetNodeOrNull<AnimatedSprite2D>("AnimatedSprite2D");
+
+		_rayFwd = GetNodeOrNull<RayCast2D>("RayCastFwd");
+		_rayLeft = GetNodeOrNull<RayCast2D>("RayCastLeft");
+		_rayRight = GetNodeOrNull<RayCast2D>("RayCastRight");
+		
+		if (_rayFwd != null) _rayFwd.TargetPosition = Vector2.Right * WallDetectionDistance;
+		if (_rayLeft != null) _rayLeft.TargetPosition = Vector2.Right.Rotated(-WallAvoidanceAngle / 2) * WallDetectionDistance;
+		if (_rayRight != null) _rayRight.TargetPosition = Vector2.Right.Rotated(WallAvoidanceAngle / 2) * WallDetectionDistance;
+
+		if (_sprite != null)
+		{
+			_sprite.Connect(
+				AnimatedSprite2D.SignalName.AnimationFinished,
+				new Callable(this, nameof(OnAttackAnimationFinished))
+			);
+			// ★ Set initial scary color
+			_sprite.Modulate = SCARY_BASE_COLOR;
+		}
+
+		_currentHealth = MaxHealth;
+		
+		// ★ Health Bar Setup
+		CreateHealthBar();
+		
+		_healthBarVisibleTimer = new Timer();
+		AddChild(_healthBarVisibleTimer);
+		_healthBarVisibleTimer.OneShot = true;
+		_healthBarVisibleTimer.WaitTime = HealthBarVisibilityTime;
+		_healthBarVisibleTimer.Timeout += HideHealthBar;
+		// ★ End Health Bar Setup
+
+		_wanderAngle = (float)(_rng.NextDouble() * Math.PI * 2);
+		_wanderChangeDelay = 1f + (float)_rng.NextDouble() * 2f;
+
+		_playerSearchTimer = new Timer();
+		AddChild(_playerSearchTimer);
+		_playerSearchTimer.WaitTime = 2.0f;
+		_playerSearchTimer.Timeout += FindPlayer;
+		_playerSearchTimer.Start();
+
+		FindPlayer();
+	}
+	
+	// ★ Health Bar Implementation Start
+	private void CreateHealthBar()
+	{
+		_healthBarContainer = new Node2D();
+		_healthBarContainer.Name = "HealthBarContainer";
+		_healthBarContainer.Position = new Vector2(0, HealthBarHeightOffset);
+		AddChild(_healthBarContainer);
+
+		_healthBar = new ProgressBar();
+		_healthBar.Name = "HealthBar";
+		_healthBar.Size = new Vector2(HealthBarWidth, HealthBarHeight);
+		_healthBar.MinValue = 0;
+		_healthBar.MaxValue = MaxHealth;
+		_healthBar.Value = _currentHealth;
+		_healthBar.ShowPercentage = false;
+		_healthBar.Position = new Vector2(-HealthBarWidth / 2, 0);
+
+		// 1. Background Style (Dark Grey/Black)
+		StyleBoxFlat backgroundStyle = new StyleBoxFlat();
+		backgroundStyle.SetBgColor(new Color(0.1f, 0.1f, 0.1f)); 
+		backgroundStyle.SetCornerRadius((Godot.Corner)0, 3); 
+		backgroundStyle.SetCornerRadius((Godot.Corner)1, 3); 
+		backgroundStyle.SetCornerRadius((Godot.Corner)2, 3); 
+		backgroundStyle.SetCornerRadius((Godot.Corner)3, 3); 
+		_healthBar.AddThemeStyleboxOverride("background", backgroundStyle);
+
+		// 2. Fill Style (SCARY_HEALTH_COLOR applied here)
+		StyleBoxFlat fillStyle = new StyleBoxFlat();
+		fillStyle.SetBgColor(SCARY_HEALTH_COLOR); // ★ Ominous Blood Red
+		fillStyle.SetCornerRadius((Godot.Corner)0, 3); 
+		fillStyle.SetCornerRadius((Godot.Corner)1, 3); 
+		fillStyle.SetCornerRadius((Godot.Corner)2, 3); 
+		fillStyle.SetCornerRadius((Godot.Corner)3, 3); 
+		_healthBar.AddThemeStyleboxOverride("fill", fillStyle);
+		
+		_healthBar.Visible = false;
+		_healthBarContainer.AddChild(_healthBar);
+	}
+	
+	private void HideHealthBar()
+	{
+		if (_healthBar != null && _currentHealth > 0)
+		{
+			_healthBar.Visible = false;
+		}
+	}
+	
+	private void ResetFlashColor()
+	{
+		// Clean up the Modulate color, resetting to the SCARY_BASE_COLOR
+		if (_sprite != null)
+		{
+			_sprite.Modulate = SCARY_BASE_COLOR;
+		}
+	}
+	// ★ Health Bar Implementation End
+
+
+	public void TakeDamage(int dmg)
+	{
+		_currentHealth -= dmg;
+		_currentHealth = Mathf.Clamp(_currentHealth, 0, MaxHealth);
+		
+		FlashDamageEffect();
+		
+		// ★ Health Bar Update
+		if (_healthBar != null)
+		{
+			_healthBar.Value = _currentHealth;
+			_healthBar.Visible = true;
+
+			_healthBarVisibleTimer.Stop();
+			if (_currentHealth > 0)
+			{
+				_healthBarVisibleTimer.Start();
+			}
+		}
+		// ★ End Health Bar Update
+
+		if (_currentHealth <= 0)
+			Die();
+	}
+	
+	private void FlashDamageEffect()
+	{
+		if (_sprite == null) return;
+
+		Tween oldTween = GetNodeOrNull<Tween>("Tween");
+		if (oldTween != null && oldTween.IsRunning())
+		{
+			oldTween.Kill();
+		}
+		
+		// ★ Use deep crimson color for flash
+		_sprite.Modulate = SCARY_HURT_COLOR;
+
+		Tween tween = CreateTween();
+		
+		// ★ Tween back to the SCARY_BASE_COLOR instead of pure white
+		tween.TweenProperty(_sprite, "modulate", SCARY_BASE_COLOR, 0.3f)
+			.SetTrans(Tween.TransitionType.Linear)
+			.SetEase(Tween.EaseType.Out);
+			
+		tween.Finished += ResetFlashColor;
+	}
+
+	private void FindPlayer()
+	{
+		_player = GetTree().GetNodesInGroup("player").FirstOrDefault() as CharacterNode;
+	}
+
+	public override void _PhysicsProcess(double delta)
+	{
+		_dt = (float)delta;
+		_attackCooldownTimer -= _dt;
+
+		if (_player == null || !IsInstanceValid(_player))
+			FindPlayer();
+
+		Vector2 velocity = Vector2.Zero;
+
+		if (_player != null && IsInstanceValid(_player))
+		{
+			Vector2 toPlayer = _player.GlobalPosition - GlobalPosition;
+			float distance = toPlayer.Length();
+
+			if (distance <= DetectionRadius)
+			{
+				// Always move towards the player if detected
+				velocity = toPlayer.Normalized() * Speed;
+				_wanderChangeDelay = 1f;
+
+				if (distance <= AttackRange)
+				{
+					// Start the attack sequence, which now calls the randomized function
+					StartAttackSequence();
+				}
+			}
+			else
+			{
+				velocity = GetWanderVelocity();
+			}
+		}
+		else
+		{
+			velocity = GetWanderVelocity();
+		}
+		
+		// Movement is now unconditional, allowing shooting while moving
+		Velocity = velocity;
+		MoveAndSlide();
+
+		bool moving = Velocity.LengthSquared() > 0.01f;
+		if (moving)
+			_lastDirection = Velocity.Normalized();
+
+		UpdateSpriteOrientation(
+			moving ? Velocity.Normalized() : _lastDirection,
+			moving
+		);
+	}
+
+	private void UpdateSpriteOrientation(Vector2 direction, bool isMoving)
+	{
+		string baseAnim = isMoving ? "walk" : "idle";
+		string prefix = "";
+
+		float absX = Mathf.Abs(direction.X);
+		float absY = Mathf.Abs(direction.Y);
+
+		if (absY > absX + VerticalDominanceBias)
+		{
+			_sprite.FlipH = false;
+			prefix = (direction.Y < 0) ? "top_angle_" : "bottom_angle_";
+		}
+		else
+		{
+			_sprite.FlipH = direction.X < 0;
+		}
+
+		PlayAnim(prefix + baseAnim);
+	}
+
+	private Vector2 GetWanderVelocity()
+	{
+		_wanderChangeDelay -= _dt;
+
+		if (_rayFwd != null && _rayLeft != null && _rayRight != null)
+		{
+			_rayFwd.Rotation = _wanderAngle;
+			_rayLeft.Rotation = _wanderAngle - WallAvoidanceAngle;
+			_rayRight.Rotation = _wanderAngle + WallAvoidanceAngle;
+			
+			_rayFwd.ForceRaycastUpdate();
+			_rayLeft.ForceRaycastUpdate();
+			_rayRight.ForceRaycastUpdate();
+			
+			if (_rayFwd.IsColliding() || _rayLeft.IsColliding() || _rayRight.IsColliding())
+			{
+				bool leftBlocked = _rayLeft.IsColliding();
+				bool rightBlocked = _rayRight.IsColliding();
+
+				if (leftBlocked && !rightBlocked)
+				{
+					_wanderAngle += WallAvoidanceAngle;
+				}
+				else if (rightBlocked && !leftBlocked)
+				{
+					_wanderAngle -= WallAvoidanceAngle;
+				}
+				else
+				{
+					if (_rng.NextDouble() < 0.5)
+						_wanderAngle += WallAvoidanceAngle;
+					else
+						_wanderAngle -= WallAvoidanceAngle;
+				}
+				
+				_wanderChangeDelay = 0.5f;
+			}
+		}
+
+		if (_wanderChangeDelay <= 0f)
+		{
+			float randomShift = (float)(_rng.NextDouble() * 0.5 - 0.25);
+			_wanderAngle += randomShift;
+			_wanderChangeDelay = 1f + (float)_rng.NextDouble() * 2f;
+		}
+
+		Vector2 dir = new Vector2(Mathf.Cos(_wanderAngle), Mathf.Sin(_wanderAngle));
+		return dir.Normalized() * Speed * WanderSpeedMultiplier;
+	}
+
+	private void StartAttackSequence()
+	{
+		if (_attackCooldownTimer > 0f) return;
+		if (ProjectileScene == null) return;
+
+		_attackCooldownTimer = AttackCooldown;
+
+		if (_sprite != null)
+		{
+			PlayAnim(AttackAnimationName);
+		}
+		
+		// ★ Select and execute a random attack mode
+		SelectAndStartAttack();
+	}
+	
+	/// <summary>
+	/// Randomly selects one of the defined attack patterns and executes it.
+	/// </summary>
+	private void SelectAndStartAttack()
+	{
+		// Random number between 0 (inclusive) and 5 (exclusive) for 5 modes
+		int modeIndex = _rng.Next(0, 5); 
+		_currentAttackMode = (AttackMode)modeIndex;
+
+		switch (_currentAttackMode)
+		{
+			case AttackMode.Circular:
+				ShootCircularProjectile();
+				break;
+			case AttackMode.Homing:
+				ShootHomingProjectile();
+				break;
+			case AttackMode.RandomSpray:
+				ShootRandomSpray();
+				break;
+			case AttackMode.CardinalShot:
+				ShootCardinalProjectile();
+				break;
+			case AttackMode.ExpandingCircle: 
+				ShootExpandingCircle();
+				break;
+		}
+	}
+	
+	/// <summary>
+	/// Fires multiple projectiles evenly spaced in a 360-degree circular pattern, 
+	/// with a slight random offset to prevent repetition.
+	/// </summary>
+	private void ShootCircularProjectile()
+	{
+		if (ProjectileScene == null || BurstCount <= 0) return;
+
+		float totalAngle = 2 * Mathf.Pi;
+		float angleIncrement = totalAngle / BurstCount;
+
+		// Random offset to slightly rotate the entire pattern for separation
+		float startingOffset = (float)(_rng.NextDouble() * angleIncrement); 
+
+		for (int i = 0; i < BurstCount; i++)
+		{
+			float currentAngle = (i * angleIncrement) + startingOffset;
+			FireProjectileFrom(GlobalPosition, currentAngle);
+		}
+	}
+
+	/// <summary>
+	/// Fires 3 projectiles aimed directly at the player's current position with a wider spread (10 degrees).
+	/// </summary>
+	private void ShootHomingProjectile()
+	{
+		if (_player == null || !IsInstanceValid(_player)) return;
+		
+		Vector2 toPlayer = _player.GlobalPosition - GlobalPosition;
+		float angleToPlayer = toPlayer.Angle();
+
+		// Shoot 3 shots with a wider spread (+/- 10 degrees)
+		for (int i = -1; i <= 1; i++)
+		{
+			float spread = Mathf.DegToRad(i * 10f);
+			FireProjectileFrom(GlobalPosition, angleToPlayer + spread);
+		}
+	}
+
+	/// <summary>
+	/// Fires 5 shots in random directions within a 120-degree forward cone based on the boss's direction.
+	/// </summary>
+	private void ShootRandomSpray()
+	{
+		int shots = 5;
+		// Determine the base angle of the boss's last movement direction
+		float baseAngle = _lastDirection.Angle();
+		float arcAngle = Mathf.DegToRad(120f);
+
+		for (int i = 0; i < shots; i++)
+		{
+			// Random offset between -60 and +60 degrees (total 120-degree arc)
+			float randomOffset = (float)(_rng.NextDouble() * arcAngle - (arcAngle / 2));
+			
+			FireProjectileFrom(GlobalPosition, baseAngle + randomOffset);
+		}
+	}
+
+	/// <summary>
+	/// Fires 4 projectiles precisely along the cardinal directions (North, South, East, West).
+	/// </summary>
+	private void ShootCardinalProjectile()
+	{
+		// Angles in radians for East (0), South (PI/2), West (PI), North (3PI/2)
+		float[] cardinalAngles = new float[] 
+		{
+			0, 
+			Mathf.Pi / 2, 
+			Mathf.Pi, 
+			3 * Mathf.Pi / 2 
+		};
+
+		foreach (float angle in cardinalAngles)
+		{
+			FireProjectileFrom(GlobalPosition, angle);
+		}
+	}
+
+	/// <summary>
+	/// Fires a burst of projectiles in a circle that expands outward.
+	/// </summary>
+	private void ShootExpandingCircle()
+	{
+		if (ProjectileScene == null || BurstCount <= 0) return;
+
+		float totalAngle = 2 * Mathf.Pi;
+		float angleIncrement = totalAngle / BurstCount;
+
+		// Use a fixed offset for this pattern to make it look uniform and recognizable
+		float startingOffset = 0f; 
+
+		for (int i = 0; i < BurstCount; i++)
+		{
+			float currentAngle = (i * angleIncrement) + startingOffset;
+			// The expanding circle effect is created by launching all projectiles
+			// simultaneously in a full circle from the same point.
+			FireProjectileFrom(GlobalPosition, currentAngle);
+		}
+	}
+
+	/// <summary>
+	/// Instantiates and launches a single projectile.
+	/// </summary>
+	/// <param name="spawnPosition">The calculated global position where the projectile should spawn.</param>
+	/// <param name="rotation">The rotation (direction) the projectile should travel.</param>
+	private void InstantiateAndLaunch(Vector2 spawnPosition, float rotation)
+	{
+		// IMPORTANT: Ensure your RatProjectile script exists and inherits from Node2D or a similar base class
+		if (ProjectileScene.Instantiate() is RatProjectile projectile)
+		{
+			projectile.GlobalPosition = spawnPosition; 
+			projectile.Damage = AttackDamage;
+			projectile.Rotation = rotation; 
+			
+			GetTree().Root.AddChild(projectile);
+		}
+		else if (ProjectileScene.Instantiate() is Node node)
+		{
+			GD.PrintErr("Projectile scene is not correctly set up as a RatProjectile instance.");
+			node.QueueFree();
+		}
+	}
+
+	/// <summary>
+	/// Fires two projectiles for every call: one from the calculated position and one from the opposite side
+	/// of the boss, both traveling in the same direction.
+	/// </summary>
+	private void FireProjectileFrom(Vector2 startPosition, float initialRotation)
+	{
+		// 1. Calculate the direction vector for the shot
+		Vector2 shotDirection = Vector2.Right.Rotated(initialRotation);
+		
+		// 2. Shot 1: Spawn in the intended direction (e.g., front/side)
+		Vector2 spawnPosition1 = startPosition + (shotDirection * ProjectileSpawnDistance);
+		InstantiateAndLaunch(spawnPosition1, initialRotation);
+
+		// 3. Shot 2: Spawn on the opposite side, but travel in the same direction
+		// This creates the mirroring effect requested by the user.
+		Vector2 spawnPosition2 = startPosition - (shotDirection * ProjectileSpawnDistance);
+		InstantiateAndLaunch(spawnPosition2, initialRotation);
+	}
+
+	private void OnAttackAnimationFinished()
+	{
+		// This function remains to handle any visual cleanup if needed.
+	}
+
+	private void Die()
+	{
+		EmitSignal(SignalName.Killed);
+		
+		if (_sprite != null &&
+			_sprite.IsConnected(
+				AnimatedSprite2D.SignalName.AnimationFinished,
+				new Callable(this, nameof(OnAttackAnimationFinished))
+			))
+		{
+			_sprite.Disconnect(
+				AnimatedSprite2D.SignalName.AnimationFinished,
+				new Callable(this, nameof(OnAttackAnimationFinished))
+			);
+		}
+
+		if (_playerSearchTimer != null)
+		{
+			_playerSearchTimer.Stop();
+			_playerSearchTimer.QueueFree();
+		}
+
+		// ★ Clean up health bar and timer
+		_healthBarVisibleTimer?.Stop();
+		_healthBarVisibleTimer?.QueueFree();
+		_healthBarContainer?.QueueFree();
+		
+		if (_sprite != null)
+		{
+			// ★ Reset to pure white before death fade (if a fade effect is used externally)
+			// or just ensure the last scary color is removed.
+			_sprite.Modulate = Colors.White;
+		}
+
+		QueueFree();
+	}
+
+	private void PlayAnim(string anim)
+	{
+		if (_sprite == null) return;
+
+		if (anim == AttackAnimationName)
+		{
+			if (_sprite.Animation != anim || !_sprite.IsPlaying())
+			{
+				_sprite.Play(anim, customSpeed: 1.0f, fromEnd: false);
+				_sprite.Frame = 0;
+			}
+			return;
+		}
+
+		string target = anim;
+
+		if (!_sprite.SpriteFrames.HasAnimation(target))
+		{
+			target = anim.Contains("walk") ? "walk" :
+					 anim.Contains("idle") ? "idle" : target;
+
+			if (!_sprite.SpriteFrames.HasAnimation(target))
+				return;
+		}
+
+		if (_sprite.Animation != AttackAnimationName && _sprite.Animation != target)
+			_sprite.Play(target);
+	}
+
+	private void _on_attack_area_body_entered(Node2D body) {}
+}

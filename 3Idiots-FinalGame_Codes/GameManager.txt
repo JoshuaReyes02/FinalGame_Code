@@ -1,0 +1,161 @@
+using Godot;
+using System.Collections.Generic;
+
+public partial class GameManager : Node
+{
+	// 1. Static reference to the single running instance of GameManager
+	private static GameManager _instance;
+	public static GameManager Instance => _instance; // Expose a static getter
+
+	// --- PERSISTENT STATE PROPERTIES ---
+	
+	// KEY: Set of permanently unlocked weapons for free switching (1, 2, 3 keys)
+	private readonly HashSet<string> _unlockedWeapons = new HashSet<string> { "Melee", "Pistol" };
+
+	// Static property to track if the player has the gun (now mostly derived from EquippedWeaponName)
+	public static bool PlayerHasGun { get; set; } = false;
+
+	// KEY: Static property to hold the name of the currently equipped weapon.
+	public static string EquippedWeaponName { get; set; } = "Pistol"; // Changed default to Pistol as per old GM
+
+	// Persistence: Dictionary to track which one-time ammo chests have been opened, 
+	// keyed by the chest's unique Node Name.
+	private static Dictionary<string, bool> _openedAmmoChests = new Dictionary<string, bool>();
+
+	public override void _Ready()
+	{
+		// 2. Set the static instance when the node is ready
+		if (_instance != null)
+		{
+			QueueFree(); // Destroy duplicate instance
+			return;
+		}
+		_instance = this;
+		GD.Print("GameManager initialized.");
+		// Ensure the manager persists across scene loads (Crucial for singletons)
+		ProcessMode = ProcessModeEnum.Always;
+		SetMultiplayerAuthority(1); 
+	}
+
+	// 3. Static method used to load new levels
+	public static void LoadNextLevel(string path)
+	{
+		// Use the stored instance (_instance) to access GetTree()
+		if (_instance != null)
+		{
+			// 🔑 CRITICAL: The level-specific persistence is cleared every time a level is loaded/reloaded.
+			ClearMapPersistence();
+			
+			GD.Print($"GameManager: Loading scene {path}");
+			_instance.GetTree().ChangeSceneToFile(path);
+		}
+		else
+		{
+			GD.PrintErr("GameManager instance not found! Cannot change scene.");
+		}
+	}
+	
+	/// <summary>
+	/// Convenience method to start a new game from a main menu/title screen.
+	/// </summary>
+	public static void StartNewGame(string initialLevelPath)
+	{
+		// Weapons are retained, but map items are reset.
+		ClearMapPersistence();
+		GD.Print("GameManager: Starting new game session.");
+		LoadNextLevel(initialLevelPath);
+	}
+	
+	// =========================================================================
+	// WEAPON UNLOCK LOGIC (INTEGRATED FROM PREVIOUS STEP)
+	// =========================================================================
+
+	/// <summary>
+	/// Permanently unlocks a weapon, allowing the player to switch to it via key input.
+	/// </summary>
+	public bool UnlockWeapon(string weaponName)
+	{
+		// Use the internal instance's HashSet
+		if (_unlockedWeapons.Add(weaponName))
+		{
+			GD.Print($"[GM] Weapon UNLOCKED: {weaponName}");
+			return true;
+		}
+		return false; // Already unlocked
+	}
+
+	/// <summary>
+	/// Checks if the player is allowed to freely switch to this weapon.
+	/// </summary>
+	public bool IsWeaponUnlocked(string weaponName)
+	{
+		return _unlockedWeapons.Contains(weaponName);
+	}
+	
+	// =========================================================================
+	// WEAPON PERSISTENCE METHOD
+	// =========================================================================
+	
+	/// <summary>
+	/// Sets the name of the player's currently equipped weapon.
+	/// This state is preserved when changing scenes.
+	/// </summary>
+	public static void SetEquippedWeapon(string weaponName)
+	{
+		// Ensure the saved name is one that can be successfully loaded
+		if (string.IsNullOrEmpty(weaponName))
+		{
+			EquippedWeaponName = "Melee";
+		}
+		else
+		{
+			EquippedWeaponName = weaponName;
+		}
+		
+		// Update the simple boolean flag based on the weapon type
+		PlayerHasGun = EquippedWeaponName != "Melee";
+		
+		GD.Print($"[Persistence] Player equipped: '{EquippedWeaponName}'. State saved.");
+	}
+
+	// =========================================================================
+	// AMMO CHEST PERSISTENCE METHODS
+	// =========================================================================
+	
+	/// <summary>
+	/// Marks an ammo chest as opened. The chest node's Name must be unique.
+	/// </summary>
+	public static void SetAmmoChestOpened(string chestName)
+	{
+		if (!_openedAmmoChests.ContainsKey(chestName))
+		{
+			_openedAmmoChests.Add(chestName, true);
+			GD.Print($"[Persistence] Marked ammo chest '{chestName}' as opened.");
+		}
+	}
+
+	/// <summary>
+	/// Checks if a specific ammo chest has already been opened.
+	/// </summary>
+	public static bool IsAmmoChestOpened(string chestName)
+	{
+		return _openedAmmoChests.ContainsKey(chestName);
+	}
+	
+	// =========================================================================
+	// MAP RESET LOGIC
+	// =========================================================================
+	
+	/// <summary>
+	/// 🔑 CRITICAL: Clears all map-specific one-time persistence data, 
+	/// ensuring elements like ammo chests reset when a level is loaded or reloaded.
+	/// </summary>
+	public static void ClearMapPersistence()
+	{
+		// Clear the list of all chests opened in the current level.
+		_openedAmmoChests.Clear(); 
+		GD.Print("GameManager: Map persistence (opened chests) has been cleared.");
+		
+		// Note: Permanent unlocks (_unlockedWeapons) are deliberately kept.
+	}
+}

@@ -1,0 +1,56 @@
+using Godot;
+using System;
+using System.Linq; 
+
+public partial class RatProjectile : Area2D
+{
+	[Export] public float ProjectileSpeed { get; set; } = 600f;
+	[Export] public int Damage { get; set; } = 2;
+	
+	private Vector2 _currentVelocity = Vector2.Zero;
+	private CharacterNode _player;
+	
+	public override void _Ready()
+	{
+		// Find the player (only needed to calculate the initial direction)
+		_player = GetTree().GetNodesInGroup("player").FirstOrDefault() as CharacterNode;
+		
+		if (_player == null)
+		{
+			// If player isn't found, calculate velocity based on rotation (which was set by Brownrat)
+			// This is a robust fallback for the straight shot.
+			_currentVelocity = Vector2.Right.Rotated(Rotation) * ProjectileSpeed;
+			return;
+		}
+		
+		// 1. Calculate the direction vector to the player
+		Vector2 toPlayer = _player.GlobalPosition - GlobalPosition;
+		
+		// 2. Set the fixed velocity vector
+		_currentVelocity = toPlayer.Normalized() * ProjectileSpeed;
+		
+		// 3. Clear the player reference, as we don't need it for movement anymore.
+		//    (This also prevents the issue of needing to check IsInstanceValid)
+		_player = null; 
+	}
+
+	public override void _PhysicsProcess(double delta)
+	{
+		// Movement is now simple and straight based on fixed _currentVelocity
+		Position += _currentVelocity * (float)delta;
+	}
+
+	private void _on_body_entered(Node2D body)
+	{
+		if (body.IsInGroup("player"))
+		{
+			// CRITICAL FIX: Casting to the correct player class: CharacterNode
+			if (body is CharacterNode player)
+			{
+				player.TakeDamage(Damage);
+			}
+		}
+		
+		QueueFree();
+	}
+}

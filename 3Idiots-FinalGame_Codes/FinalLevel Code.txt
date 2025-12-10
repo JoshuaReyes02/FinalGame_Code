@@ -1,0 +1,214 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+
+public partial class Finallevel : Node2D 
+{
+	private const string PlayerGroupName = "player";
+	private const string SpawnMarkerName = "Finallevel_Spawn";
+	
+	// --- Falling Sakura Petal Constants (Increased Density) ---
+	private const int PETAL_COUNT = 200;                // INCREASED count for dense bloom
+	private const float FALL_SPEED_MIN = 30.0f;         
+	private const float FALL_SPEED_MAX = 70.0f;         
+	private const float HORIZONTAL_DRIFT_SPEED = 15.0f; 
+	private const float DRIFT_CHANGE_TIME = 5.0f;       
+	private const float PETAL_OPACITY = 0.7f;           
+	private const float PETAL_SIZE_MIN = 3.0f;          
+	private const float PETAL_SIZE_MAX = 5.0f;          
+	
+	private RandomNumberGenerator _rng = new RandomNumberGenerator();
+	private Vector2 _viewportSize;
+
+	// Structure to hold particle data
+	private struct PetalParticle
+	{
+		public Vector2 Position;
+		public float Size;
+		public float FallSpeed;         
+		public float HorizontalDrift;   
+		public float DriftTimer;        
+		public Color PetalColor;         
+	}
+
+	private List<PetalParticle> _particles = new List<PetalParticle>();
+	private Node2D _drawingNode;
+
+	public override void _Ready()
+	{
+		GD.Print("Final Level Loaded. Attempting to spawn player...");
+		
+		_rng.Seed = (ulong)DateTime.Now.Ticks;
+		_viewportSize = GetViewportRect().Size;
+		
+		// 1. --- Player Spawning Logic ---
+		SpawnPlayer();
+
+		// 2. --- Falling Petals Particle Logic ---
+		InitializeFallingPetals();
+	}
+	
+	// --------------------------------------------------------------------------
+	// MANUAL MOVEMENT LOGIC (Petals)
+	// --------------------------------------------------------------------------
+
+	public override void _Process(double delta)
+	{
+		// 1. Update Particle Positions
+		for (int i = 0; i < _particles.Count; i++)
+		{
+			PetalParticle p = _particles[i];
+			float dt = (float)delta;
+			
+			// --- Apply Movement ---
+			p.Position.Y += p.FallSpeed * dt;
+			p.Position.X += p.HorizontalDrift * HORIZONTAL_DRIFT_SPEED * dt;
+			
+			// --- Update Drift Timer ---
+			p.DriftTimer -= dt;
+
+			// Check if it's time to change horizontal drift direction
+			if (p.DriftTimer <= 0)
+			{
+				p.HorizontalDrift *= -1; 
+				p.DriftTimer = DRIFT_CHANGE_TIME;
+			}
+
+			// --- Boundary Check: Reset if fallen off screen ---
+			if (p.Position.Y > _viewportSize.Y + p.Size)
+			{
+				p.Position = ResetPetalPosition(p.Size);
+			}
+
+			_particles[i] = p; 
+		}
+		
+		// 2. Redraw the particles on the screen
+		if (_drawingNode != null)
+		{
+			_drawingNode.QueueRedraw();
+		}
+	}
+	
+	// --------------------------------------------------------------------------
+	// PLAYER SPAWN LOGIC (Unchanged)
+	// --------------------------------------------------------------------------
+
+	private void SpawnPlayer()
+	{
+		Node2D player = null; 
+
+		foreach (Node node in GetTree().Root.GetChildren())
+		{
+			if (node.IsInGroup(PlayerGroupName) && node.Name == "CharacterNode" && node is Node2D playerNode)
+			{
+				player = playerNode;
+				break;
+			}
+		}
+
+		if (player == null)
+		{
+			GD.PrintErr("Could not find player in the scene tree!");
+			return;
+		}
+
+		var spawnPoint = GetNodeOrNull<Marker2D>(SpawnMarkerName);
+
+		if (spawnPoint != null)
+		{
+			player.GlobalPosition = spawnPoint.GlobalPosition;
+			GD.Print($"Player successfully spawned at: {player.GlobalPosition}");
+		}
+		else
+		{
+			GD.PrintErr($"Could not find spawn marker: {SpawnMarkerName}. Player may be stuck at (0, 0).");
+		}
+	}
+	
+	// --------------------------------------------------------------------------
+	// FALLING PETALS DRAWING LOGIC
+	// --------------------------------------------------------------------------
+
+	private void InitializeFallingPetals()
+	{
+		// 1. Setup the CanvasLayer and the Drawing Node
+		CanvasLayer petalLayer = new CanvasLayer();
+		petalLayer.Layer = 100;
+		AddChild(petalLayer);
+
+		_drawingNode = new Node2D();
+		_drawingNode.Name = "PetalsDrawingNode";
+		_drawingNode.SetProcessMode(Node.ProcessModeEnum.Always); 
+		_drawingNode.Draw += OnPetalsDraw; 
+		petalLayer.AddChild(_drawingNode);
+		
+		// 2. Populate the particle data list
+		for (int i = 0; i < PETAL_COUNT; i++)
+		{
+			PetalParticle p = new PetalParticle();
+			p.Size = _rng.RandfRange(PETAL_SIZE_MIN, PETAL_SIZE_MAX);
+			p.FallSpeed = _rng.RandfRange(FALL_SPEED_MIN, FALL_SPEED_MAX);
+			
+			// Initial random setup
+			p.Position = ResetPetalPosition(p.Size, true); 
+			p.HorizontalDrift = _rng.Randf() < 0.5f ? 1.0f : -1.0f; 
+			p.DriftTimer = _rng.RandfRange(0.0f, DRIFT_CHANGE_TIME);
+			p.PetalColor = GetRandomSakuraColor(); 
+			
+			_particles.Add(p);
+		}
+		
+		GD.Print($"Initialized {PETAL_COUNT} procedural falling cherry blossoms.");
+	}
+
+	/// <summary>
+	/// Returns a random color suitable for deep pink sakura petals.
+	/// </summary>
+	private Color GetRandomSakuraColor()
+	{
+		// Choose from deeper pinks and magentas (emphasizing Red over Green/Blue)
+		int choice = _rng.RandiRange(0, 3);
+		switch (choice)
+		{
+			case 0: return new Color(1.0f, 0.7f, 0.8f, PETAL_OPACITY); // Medium Pink
+			case 1: return new Color(1.0f, 0.5f, 0.65f, PETAL_OPACITY); // Deep Rosy Pink
+			case 2: return new Color(0.9f, 0.6f, 0.75f, PETAL_OPACITY); // Slightly Muted Magenta Pink
+			case 3: return new Color(1.0f, 0.75f, 0.85f, PETAL_OPACITY); // Classic Sakura Pink
+			default: return new Color(1.0f, 0.6f, 0.7f, PETAL_OPACITY);
+		}
+	}
+
+	/// <summary>
+	/// Custom draw function executed when _drawingNode.QueueRedraw() is called.
+	/// </summary>
+	private void OnPetalsDraw()
+	{
+		foreach (var p in _particles)
+		{
+			// Draw the particle as a small rectangle using the particle's unique color
+			Rect2 rect = new Rect2(p.Position - new Vector2(p.Size/2, p.Size/2), new Vector2(p.Size, p.Size));
+			_drawingNode.DrawRect(rect, p.PetalColor);
+		}
+	}
+	
+	/// <summary>
+	/// Calculates a new starting position for a petal (off-screen top).
+	/// </summary>
+	private Vector2 ResetPetalPosition(float size, bool initialPlacement = false)
+	{
+		float startX = _rng.RandfRange(0, _viewportSize.X);
+		
+		float startY;
+		if (initialPlacement)
+		{
+			startY = _rng.RandfRange(0, _viewportSize.Y); 
+		}
+		else
+		{
+			startY = _rng.RandfRange(-size - 100.0f, -size - 1.0f); 
+		}
+
+		return new Vector2(startX, startY);
+	}
+}

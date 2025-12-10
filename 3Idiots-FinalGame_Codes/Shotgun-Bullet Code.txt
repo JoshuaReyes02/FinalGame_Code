@@ -1,0 +1,79 @@
+using Godot;
+using System;
+
+/// <summary>
+/// Defines the behavior and stats for the Shotgun projectile (pellet).
+/// </summary>
+public partial class ShotgunBullet : Area2D // Corrected to inherit directly from Area2D
+{
+	// Stats adjusted for a typical shotgun pellet: slower, lower damage per pellet.
+	[Export] public float Speed { get; set; } = 600f; // Slower speed for shorter range
+	[Export] public int Damage { get; set; } = 20;    // Lower damage per pellet (total burst damage is high)
+	[Export] public float Lifetime { get; set; } = 0.6f;  // Shorter lifetime/range for the spread
+
+	public Vector2 Direction { get; set; } = Vector2.Right;
+
+	private SceneTreeTimer _lifetimeTimer;
+
+	public override void _Ready()
+	{
+		BodyEntered += OnBodyEntered;
+		
+		_lifetimeTimer = GetTree().CreateTimer(Lifetime);
+		_lifetimeTimer.Timeout += QueueFree; 
+		
+		// --- VISIBILITY DEBUGGING / FALLBACK ---
+		// Ensure there is a visible Sprite2D component.
+		if (GetNodeOrNull<Sprite2D>("Sprite2D") == null)
+		{
+			// If the scene doesn't have a Sprite2D node named "Sprite2D", this prints an error 
+			// and attempts to instantiate a temporary sprite to ensure visibility for debugging.
+			GD.PrintErr("[SHOTGUN PELLET DEBUG] ShotgunBullet scene is missing a Sprite2D node named 'Sprite2D'.");
+
+			// *** IMPORTANT: You must replace this with a valid path to a simple texture ***
+			// Use a simple, small sprite for the pellet, like a pixel or small explosion texture.
+			const string DebugTexturePath = "res://Sprites/BulletSprite/pistol_bullet_texture.png"; // Replace with your actual path
+			
+			Texture2D debugTexture = GD.Load<Texture2D>(DebugTexturePath);
+
+			if (debugTexture != null)
+			{
+				Sprite2D debugSprite = new Sprite2D();
+				debugSprite.Texture = debugTexture;
+				debugSprite.Scale = new Vector2(0.5f, 0.5f); // Scale down if needed
+				AddChild(debugSprite);
+				// The newly added sprite will now be visible, confirming the *code* is working
+				// and directing the user to fix the *scene file* (ShotgunBullet.tscn).
+			}
+			else
+			{
+				GD.PrintErr($"[SHOTGUN PELLET DEBUG] Could not load debug texture at {DebugTexturePath}. The pellet will remain invisible.");
+			}
+		}
+		// --- END VISIBILITY DEBUGGING / FALLBACK ---
+	}
+
+	public override void _PhysicsProcess(double delta)
+	{
+		Position += Direction * Speed * (float)delta;
+	}
+
+	private void OnBodyEntered(Node2D body)
+	{
+		// 1. Player exclusion
+		if (body.IsInGroup("player"))
+		{
+			return; 
+		}
+		
+		// 2. Inflict damage
+		// Note: The player character (CharacterNode) must have the TakeDamage method to be called successfully.
+		if (body.HasMethod("TakeDamage"))
+		{
+			body.Call("TakeDamage", Damage); 
+		}
+
+		// 3. Destroy bullet
+		QueueFree();
+	}
+}

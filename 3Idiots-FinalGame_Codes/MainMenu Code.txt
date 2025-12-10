@@ -1,0 +1,144 @@
+using Godot;
+using System;
+
+public partial class Mainmenu : Node2D // Or Node2D if yours is Node2D
+{
+	// Define the scene paths
+	private const string INITIAL_LEVEL_PATH = "res://GameScene/game_scene.tscn";
+	private const string LEVEL_SELECT_PATH = "res://GameScene/SelectLevelScene.tscn";
+	private const string CONTROLS_SCENE_PATH = "res://GameScene/controlsscene.tscn";
+	
+	// --- Transition Properties ---
+	private const float WIPE_IN_DURATION = 0.5f; // Duration for the wipe in
+	private const float PIXEL_BLOCKS = 32.0f; // Simple, chunky pixel size for retro feel
+
+	// --- Transition Members ---
+	private ColorRect _transitionRect;
+	private ShaderMaterial _material;
+
+	// --- SHADER CODE FOR SIMPLE PIXELATED DIAGONAL WIPE (WIPE IN) ---
+	private const string TRANSITION_SHADER_CODE = @"
+// Pixelated Diagonal Wipe Shader (Top-Left to Bottom-Right)
+shader_type canvas_item;
+
+uniform float progress = 0.0; // 0.0 is visible, 1.0 is obscured
+uniform float blocks = 32.0; // Resolution of the pixelation
+
+void fragment() {
+    // 1. Calculate Block UV (for pixelation)
+    float block_size = 1.0 / blocks;
+    vec2 block_uv = floor(UV / block_size) * block_size;
+    vec2 block_center = block_uv + block_size * 0.5;
+
+    // 2. Diagonal Wipe Metric (Top-Left to Bottom-Right)
+    // Sum X and Y coordinates. Value ranges from ~0.0 (top-left) to ~2.0 (bottom-right).
+    float diagonal_dist = block_center.x + block_center.y;
+    
+    // Normalize distance to range from 0.0 to 1.0
+    // This value represents the point on the timeline when this block should turn black.
+    float normalized_dist = diagonal_dist / 2.0; 
+
+    // 3. Transition Logic
+    
+    // The block turns black when the progress (time) reaches or exceeds its diagonal position.
+    if (progress > normalized_dist) {
+        COLOR = vec4(0.0, 0.0, 0.0, 1.0); // Black block
+    } else {
+        COLOR = vec4(0.0, 0.0, 0.0, 0.0); // Transparent block
+    }
+}
+";
+
+	public override void _Ready()
+	{
+		// Initialize the transition screen (starts invisible)
+		InitializeTransitionScreen();
+		
+		// Connect buttons using the common transition handler
+		GetNode<Button>("NewGameButton").Pressed += () => OnButtonPressed(INITIAL_LEVEL_PATH);
+		
+		if (TryGetNode("LoadLevelButton", out Button loadButton))
+		{
+			loadButton.Pressed += () => OnButtonPressed(LEVEL_SELECT_PATH);
+		}
+		
+		GetNode<Button>("ExitButton").Pressed += OnExitPressed;
+		
+		if (TryGetNode("ControlsButton", out Button controlsButton))
+	{
+	controlsButton.Pressed += () => OnButtonPressed(CONTROLS_SCENE_PATH);
+	}
+	
+	}
+
+	private void InitializeTransitionScreen()
+	{
+		// 1. Create a CanvasLayer for drawing on top
+		var canvasLayer = new CanvasLayer();
+		canvasLayer.Name = "TransitionCanvasLayer";
+		canvasLayer.Layer = 100;
+		canvasLayer.ProcessMode = ProcessModeEnum.Always; 
+		AddChild(canvasLayer);
+
+		// 2. Create the ColorRect (the transition screen)
+		_transitionRect = new ColorRect();
+		_transitionRect.Name = "TransitionColorRect";
+		_transitionRect.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		_transitionRect.MouseFilter = Control.MouseFilterEnum.Ignore; 
+
+		// 3. Create and apply the ShaderMaterial
+		var shader = new Shader();
+		shader.Code = TRANSITION_SHADER_CODE;
+		_material = new ShaderMaterial();
+		_material.Shader = shader;
+		
+		_transitionRect.Material = _material;
+		
+		// Set initial shader uniform values
+		_material.SetShaderParameter("progress", 0.0f); // Start invisible
+		_material.SetShaderParameter("blocks", PIXEL_BLOCKS);
+
+		canvasLayer.AddChild(_transitionRect);
+	}
+	
+	// Unified function to handle scene changes with the diagonal transition
+	private void OnButtonPressed(string targetPath)
+	{
+		if (_material == null) return;
+
+		GD.Print($"Starting diagonal transition to: {targetPath}");
+		
+		var tween = GetTree().CreateTween();
+		
+		// 1. WIPE IN: Animate 'progress' from 0.0 (visible) to 1.0 (fully black)
+		tween.TweenProperty(_material, "shader_parameter/progress", 1.0f, WIPE_IN_DURATION)
+			.SetEase(Tween.EaseType.Out)
+			.SetTrans(Tween.TransitionType.Linear); // Linear is often best for clean wipes
+
+		// 2. LOAD NEW SCENE: Once the wipe is complete (screen is black), load the new level
+		tween.TweenCallback(Callable.From(() =>
+		{
+			GD.Print("Diagonal transition complete — loading new scene.");
+			GetTree().ChangeSceneToFile(targetPath);
+		}));
+	}
+
+
+	private void OnExitPressed()
+	{
+		GD.Print("Exiting game...");
+		GetTree().Quit();
+	}
+	
+	// Helper method to safely get a node
+	private bool TryGetNode<T>(string name, out T node) where T : Node
+	{
+		if (HasNode(name))
+		{
+			node = GetNode<T>(name);
+			return true;
+		}
+		node = null;
+		return false;
+	}
+}

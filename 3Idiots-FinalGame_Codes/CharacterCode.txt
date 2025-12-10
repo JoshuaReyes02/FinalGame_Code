@@ -1,0 +1,645 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+
+public partial class CharacterNode : CharacterBody2D
+{
+	[Signal] public delegate void HealthChangedEventHandler(int health);
+	[Signal] public delegate void AmmoChangedEventHandler(int currentAmmo, int maxAmmo);
+
+	// --- MOVEMENT PROPERTIES ---
+	[Export] public float MovementSpeed { get; set; } = 370f;
+	[Export] public float DashSpeed { get; set; } = 930f;
+	[Export] public float DashDuration { get; set; } = 0.3f;
+	[Export] public float DashCooldown { get; set; } = 1.0f;
+
+	private bool _isDashing = false;
+	private bool _canDash = true;
+	private Vector2 _dashDirection = Vector2.Zero;
+	private float _dashTimer = 0f;
+	private float _cooldownTimer = 0f;
+
+	// --- HEALTH PROPERTIES ---
+	[Export] public int MaxHealth { get; set; } = 5;
+	[Export] public float RegenTime { get; set; } = 2.0f;
+	
+	public int CurrentHealth { get; private set; }
+	private double _regenTimer = 0.0;
+
+	// --- GLOBAL WEAPON STATS ---
+	[Export] public float ReloadTime { get; set; } = 0.5f;
+
+	// --- SPRITE FRAMES ---
+	[ExportGroup("Sprite Frames")]
+	[Export] public SpriteFrames MeleeSpriteFrames { get; set; }
+
+	// --- WEAPON STATS (Pistol & Rifle) ---
+	[ExportGroup("Pistol Stats")]
+	[Export] public int PistolMaxAmmo { get; set; } = 30;
+	[Export] public float PistolFireCooldown { get; set; } = 0.15f;
+	[Export] public PackedScene PistolBulletScene { get; set; } = GD.Load<PackedScene>("res://Sprites/BulletSprite/bullet.tscn");
+	[Export] public SpriteFrames PistolSpriteFrames { get; set; }
+
+	[ExportGroup("Rifle Stats")]
+	[Export] public int RifleMaxAmmo { get; set; } = 60;
+	[Export] public float RifleFireCooldown { get; set; } = 0.08f;
+	[Export] public PackedScene RifleBulletScene { get; set; } = GD.Load<PackedScene>("res://Sprites/BulletSprite/rifle_bullet.tscn");
+	[Export] public SpriteFrames RifleSpriteFrames { get; set; }
+	
+	// --- SHOTGUN STATS (UPDATED) ---
+	[ExportGroup("Shotgun Stats")]
+	[Export] public int ShotgunMaxAmmo { get; set; } = 8;
+	[Export] public float ShotgunFireCooldown { get; set; } = 0.8f; // Slower fire rate
+	[Export] public PackedScene ShotgunBulletScene { get; set; } = GD.Load<PackedScene>("res://Sprites/BulletSprite/shotgun_bullet.tscn");
+	[Export] public SpriteFrames ShotgunSpriteFrames { get; set; } // This is typically the smaller gun sprite frames
+	
+	// NEW: Separate frames for the character body when holding the shotgun (Shotgun_Cat_Frames_NEW)
+	[Export] public SpriteFrames ShotgunCharacterSpriteFrames { get; set; }
+	
+	// NEW: Spread properties for the shotgun
+	[Export] public int ShotgunPellets { get; set; } = 5; // The number of projectiles fired per shot
+	[Export] public float ShotgunSpreadAngle { get; set; } = 15f; // Total spread angle in degrees
+
+	// --- CURRENT WEAPON PROPERTIES ---
+	public string CurrentWeapon { get; private set; } = "None";
+	
+	public PackedScene BulletScene { get; set; }
+	public int MaxAmmo { get; set; }
+	public float FireCooldown { get; set; }
+
+	private int _currentAmmo;
+	public int CurrentAmmo => _currentAmmo;
+	private bool _isReloading = false;
+	private float _fireTimer = 0f;
+	public bool HasGun { get; private set; } = false;
+
+	// --- NODE REFERENCES ---
+	private AnimatedSprite2D _animatedSprite;
+	private Node2D _gunFiring;
+	private AnimatedSprite2D _gunSprite;
+	
+	private const string GameOverScenePath = "res://GameScene/GameOverScreen.tscn";
+
+	private void UpdateUI()
+	{
+		EmitSignal(SignalName.HealthChanged, CurrentHealth);
+		EmitSignal(SignalName.AmmoChanged, _currentAmmo, MaxAmmo);
+	}
+
+	public override void _Ready()
+	{
+		AddToGroup("player");
+		_animatedSprite = GetNode<AnimatedSprite2D>("AnimatedSprite2D");
+		_gunFiring = GetNode<Node2D>("GunFiring");
+		
+		_gunSprite = _gunFiring.GetNodeOrNull<AnimatedSprite2D>("GunSprite");
+		if (_gunSprite == null)
+		{
+			GD.PrintErr("FATAL: Could not find 'GunSprite' under 'GunFiring' node. Please check your scene tree structure.");
+		}
+		
+		// 🔑 INITIAL SPRITE STATE: Ensure the player starts with the unarmed/melee sprite frames immediately.
+		if (MeleeSpriteFrames != null)
+		{
+			_animatedSprite.SpriteFrames = MeleeSpriteFrames;
+			// Start playing the default animation (e.g., idle or walk cycle)
+			if (_animatedSprite.SpriteFrames.HasAnimation("default"))
+			{
+				_animatedSprite.Play("default");
+			}
+		}
+
+		CurrentHealth = MaxHealth;
+		
+		// 🔑 WEAPON PERSISTENCE & INITIAL STATE: 
+		// Read the last equipped weapon from the GameManager for scene persistence.
+		string initialWeapon = GameManager.EquippedWeaponName;
+		
+		// If the GameManager has no persistent weapon set (first time in level/new game),
+		// force the initial weapon to "Melee" (unarmed/no gun).
+		if (string.IsNullOrEmpty(initialWeapon) || initialWeapon == "StarterWeapon")
+		{
+			initialWeapon = "Melee";
+		}
+		
+		// EquipWeapon handles hiding the gun sprite and setting other stats.
+		EquipWeapon(initialWeapon, true);
+		
+		var heartContainerNode = GetTree().Root.FindChild("HeartContainer", true, false);
+		
+		if (heartContainerNode != null)
+		{
+			Error healthConnect = Connect(SignalName.HealthChanged, new Callable(heartContainerNode, "_on_player_health_changed"));
+			Error ammoConnect = Connect(SignalName.AmmoChanged, new Callable(heartContainerNode, "_on_player_ammo_changed"));
+			if (healthConnect == Error.Ok && ammoConnect == Error.Ok)
+			{
+				GD.Print("Successfully connected HealthChanged and AmmoChanged signals to HeartContainer.");
+			}
+			else
+			{
+				GD.PrintErr($"Failed to connect signals. Health Error: {healthConnect}, Ammo Error: {ammoConnect}");
+			}
+		}
+		else
+		{
+			GD.PrintErr("Could not find 'HeartContainer' node in the scene tree. Health/Ammo UI will not function.");
+		}
+		
+		UpdateUI();
+	}
+	
+	// =========================================================================
+	// INPUT LOGIC FOR WEAPON SWITCHING (1, 2, 3) - NOW CHECKING UNLOCK STATUS
+	// =========================================================================
+	public override void _Input(InputEvent @event)
+	{
+		string targetWeapon = null;
+		
+		// The Pistol is the first gun the player unlocks, so we check for its availability.
+		if (@event.IsActionPressed("ui_weapon_1"))
+		{
+			targetWeapon = "Pistol";
+		}
+		// The Rifle is the second gun.
+		else if (@event.IsActionPressed("ui_weapon_2"))
+		{
+			targetWeapon = "Rifle";
+		}
+		// The Shotgun is the third gun.
+		else if (@event.IsActionPressed("ui_weapon_3"))
+		{
+			targetWeapon = "Shotgun";
+		}
+
+		if (targetWeapon != null)
+		{
+			// Get the GameManager instance
+			var gameManager = GameManager.Instance;
+			
+			// 🔑 CRITICAL: Only allow weapon switch if the weapon is unlocked
+			if (gameManager != null && gameManager.IsWeaponUnlocked(targetWeapon))
+			{
+				EquipWeapon(targetWeapon);
+				GetViewport().SetInputAsHandled();
+			}
+			else if (gameManager != null)
+			{
+				GD.Print($"Weapon '{targetWeapon}' is locked! Find the chest to unlock it.");
+				// Optional: Play a "locked" sound effect or show a UI message here
+			}
+		}
+	}
+	// =========================================================================
+	// END UPDATED INPUT LOGIC
+	// =========================================================================
+	
+	// =========================================================================
+	// CORE WEAPON SWAP LOGIC
+	// =========================================================================
+	public void EquipWeapon(string weaponName, bool initialEquip = false)
+	{
+		GD.Print($"[DEBUG] Attempting to equip {weaponName}. Current Health: {CurrentHealth}.");
+
+		// Handle null/invalid name explicitly for safety
+		if (weaponName == null || weaponName == "None")
+		{
+			weaponName = "Melee";
+		}
+
+		if (CurrentWeapon == weaponName && !initialEquip)
+		{
+			GD.Print($"Weapon {weaponName} already equipped. Skipping swap.");
+			return;
+		}
+		
+		SpriteFrames newCharacterFrames = MeleeSpriteFrames;
+		SpriteFrames newGunFrames = null;
+		bool isGun = false;
+
+		switch (weaponName)
+		{
+			case "Pistol":
+				MaxAmmo = PistolMaxAmmo;
+				FireCooldown = PistolFireCooldown;
+				BulletScene = PistolBulletScene;
+				newCharacterFrames = PistolSpriteFrames;
+				newGunFrames = PistolSpriteFrames;
+				CurrentWeapon = "Pistol";
+				isGun = true;
+				break;
+			case "Rifle":
+				MaxAmmo = RifleMaxAmmo;
+				FireCooldown = RifleFireCooldown;
+				BulletScene = RifleBulletScene;
+				newCharacterFrames = RifleSpriteFrames;
+				newGunFrames = RifleSpriteFrames;
+				CurrentWeapon = "Rifle";
+				isGun = true;
+				break;
+			case "Shotgun":
+				MaxAmmo = ShotgunMaxAmmo;
+				FireCooldown = ShotgunFireCooldown;
+				BulletScene = ShotgunBulletScene;
+				// --- Custom Shotgun SpriteFrames Assignment ---
+				newCharacterFrames = ShotgunCharacterSpriteFrames; 
+				newGunFrames = ShotgunSpriteFrames; 
+				// ----------------------------------------------
+				CurrentWeapon = "Shotgun";
+				isGun = true;
+				break;
+			case "Melee":
+			default:
+				MaxAmmo = 0;
+				FireCooldown = 0.0f;
+				BulletScene = null;
+				newCharacterFrames = MeleeSpriteFrames;
+				CurrentWeapon = "Melee";
+				isGun = false;
+				break;
+		}
+		
+		// 1. Apply new SpriteFrames to the character (main body)
+		if (newCharacterFrames != null)
+		{
+			_animatedSprite.SpriteFrames = newCharacterFrames;
+		}
+
+		// 2. Update Gun Sprite visibility and frames
+		HasGun = isGun;
+		if (_gunFiring != null) _gunFiring.Visible = isGun;
+		if (_gunSprite != null)
+		{
+			_gunSprite.Visible = isGun;
+			if (isGun && newGunFrames != null)
+			{
+				_gunSprite.SpriteFrames = newGunFrames;
+				if (_gunSprite.SpriteFrames.HasAnimation("idle"))
+				{
+					_gunSprite.Play("idle");
+				}
+			}
+		}
+
+		// 3. Ammo logic (simple: max ammo on equip/load)
+		if (isGun)
+		{
+			_currentAmmo = MaxAmmo;
+		}
+		
+		// 4. Reset animation to idle/aiming stance or default
+		if (_animatedSprite.SpriteFrames != null)
+		{
+			if (isGun && _animatedSprite.SpriteFrames.HasAnimation("aim_bottom"))
+			{
+				_animatedSprite.Play("aim_bottom");
+			}
+			else if (!isGun && _animatedSprite.SpriteFrames.HasAnimation("default"))
+			{
+				_animatedSprite.Play("default");
+			}
+		}
+
+		// 🔑 WEAPON PERSISTENCE: Save the new weapon name to the GameManager for the next scene.
+		GameManager.SetEquippedWeapon(CurrentWeapon);
+		
+		UpdateUI();
+		GD.Print($"[DEBUG] Successfully equipped {CurrentWeapon}. Character state changed safely.");
+	}
+	
+	private void SetGunState(bool hasGun)
+	{
+		HasGun = hasGun;
+		if (_gunFiring != null) _gunFiring.Visible = hasGun;
+		if (_gunSprite != null)
+		{
+			_gunSprite.Visible = hasGun;
+		}
+		
+		UpdateUI();
+	}
+	// =========================================================================
+	// END CORE WEAPON SWAP LOGIC
+	// =========================================================================
+
+	public override void _PhysicsProcess(double delta)
+	{
+		float d = (float)delta;
+		_fireTimer += d;
+		
+		if (CurrentHealth < MaxHealth && CurrentHealth > 0)
+		{
+			_regenTimer += delta;
+			if (_regenTimer >= RegenTime)
+			{
+				Heal(1);
+				_regenTimer = 0.0;
+			}
+		}
+
+		Vector2 inputDirection = Vector2.Zero;
+		if (Input.IsActionPressed("move_right")) inputDirection.X += 1;
+		if (Input.IsActionPressed("move_left")) inputDirection.X -= 1;
+		if (Input.IsActionPressed("move_down")) inputDirection.Y += 1;
+		if (Input.IsActionPressed("move_up")) inputDirection.Y -= 1;
+		
+		inputDirection = inputDirection.Normalized();
+
+		HandleDash(inputDirection, d);
+
+		if (!_isDashing)
+		{
+			Velocity = inputDirection * MovementSpeed;
+		}
+		
+		MoveAndSlide();
+
+		if (HasGun)
+		{
+			HandleGunRotation();
+		}
+		else
+		{
+			HandleMovementAnimation(Velocity);
+		}
+		
+		HandleShooting();
+	}
+	
+	public void TakeDamage(int amount = 1)
+	{
+		if (_isDashing) return;
+
+		CurrentHealth -= amount;
+		CurrentHealth = Mathf.Clamp(CurrentHealth, 0, MaxHealth);
+		
+		_regenTimer = 0.0;
+
+		UpdateUI();
+		GD.Print($"Player Damaged! HP: {CurrentHealth}/{MaxHealth}");
+
+		if (CurrentHealth <= 0)
+			Die();
+	}
+
+	public void Heal(int amount)
+	{
+		CurrentHealth += amount;
+		if (CurrentHealth > MaxHealth) CurrentHealth = MaxHealth;
+		
+		UpdateUI();
+	}
+
+	private void Die()
+	{
+		GD.PrintErr($"[FATAL] Player Died! Current Health was: {CurrentHealth}. Loading Game Over Screen.");
+		
+		var heartContainerNode = GetTree().Root.FindChild("HeartContainer", true, false);
+		if (heartContainerNode != null)
+		{
+			heartContainerNode.CallDeferred("HideUI");
+		}
+
+		string currentLevelPath = "";
+		if (GetTree().CurrentScene != null)
+		{
+			currentLevelPath = GetTree().CurrentScene.SceneFilePath;
+		}
+
+		var gameOverScenePacked = GD.Load<PackedScene>(GameOverScenePath);
+
+		if (gameOverScenePacked != null)
+		{
+			Node instance = gameOverScenePacked.Instantiate();
+			
+			if (instance is GameOverScreen gameOverInstance)
+			{
+				gameOverInstance.SetLastLevelPath(currentLevelPath);
+				GetTree().Root.AddChild(gameOverInstance);
+				GetTree().Paused = true;
+			}
+			else
+			{
+				GD.PrintErr("FATAL ERROR: Instantiated scene is not of type GameOverScreen script.");
+			}
+		}
+		else
+		{
+			GD.PrintErr($"FATAL ERROR: Could not load the GameOverScreen.tscn at: {GameOverScenePath}");
+		}
+		
+		QueueFree();
+	}
+	
+	private void HandleDash(Vector2 velocity, float d)
+	{
+		if (Input.IsActionJustPressed("dash") && _canDash && velocity != Vector2.Zero)
+		{
+			_isDashing = true;
+			_canDash = false;
+			_dashDirection = velocity.Normalized();
+			_dashTimer = DashDuration;
+			_cooldownTimer = DashCooldown;
+
+			if (_animatedSprite.SpriteFrames.HasAnimation("dash"))
+				_animatedSprite.Play("dash");
+		}
+
+		if (_isDashing)
+		{
+			_dashTimer -= d;
+			Velocity = _dashDirection * DashSpeed;
+			
+			if (_dashTimer <= 0)
+			{
+				_isDashing = false;
+				if (HasGun) HandleGunRotation();
+				else HandleMovementAnimation(Velocity);
+			}
+		}
+		
+		if (!_canDash)
+		{
+			_cooldownTimer -= d;
+			if (_cooldownTimer <= 0) _canDash = true;
+		}
+	}
+
+	private void HandleMovementAnimation(Vector2 velocity)
+	{
+		if (_isDashing || HasGun) return;
+
+		if (velocity != Vector2.Zero)
+			// Ensure "default" is the unarmed walking animation
+			_animatedSprite.Play(velocity.X >= 0 ? "default" : "new_animation"); // Assuming "new_animation" is the flipped walk
+		else
+			// If not moving, ensure the "default" (idle) frame is shown
+			_animatedSprite.Play("default");
+	}
+
+	private void HandleShooting()
+	{
+		if (!HasGun) return;
+		
+		// If the player is unarmed, they can't shoot, but they might be able to melee attack.
+		// For now, only check for gun shooting.
+		if (Input.IsActionPressed("shoot")) Shoot();
+		
+		if (Input.IsActionJustPressed("reload")) Reload();
+	}
+
+	private void HandleGunRotation()
+	{
+		if (!HasGun || _gunFiring == null) return;
+
+		Vector2 mousePos = GetGlobalMousePosition();
+		Vector2 gunDir = (mousePos - GlobalPosition).Normalized();
+		_gunFiring.Rotation = gunDir.Angle();
+
+		if (_isDashing) return;
+
+		bool isMoving = Velocity.LengthSquared() > 0.01f;
+		
+		float angleDeg = gunDir.Angle() * (180f / MathF.PI);
+		string baseAnim = "aim_bottom";
+		bool flip = false;
+
+		// This logic needs to match the frame names in your SpriteFrames assets for the equipped weapon.
+		// These typically represent the character holding the weapon in different directions.
+		if (angleDeg >= -22.5f && angleDeg <= 22.5f) { baseAnim = "gun_right"; flip = false; }
+		else if (angleDeg > 22.5f && angleDeg <= 67.5f) { baseAnim = "side_right"; flip = false; }
+		else if (angleDeg > 67.5f && angleDeg <= 112.5f) { baseAnim = "aim_bottom"; flip = false; }
+		else if (angleDeg > 112.5f && angleDeg <= 157.5f) { baseAnim = "side_right"; flip = true; }
+		else if (angleDeg > 157.5f || angleDeg < -157.5f) { baseAnim = "gun_right"; flip = true; }
+		else if (angleDeg < -112.5f && angleDeg >= -157.5f) { baseAnim = "aim_top_left"; flip = false; }
+		else if (angleDeg < -67.5f && angleDeg >= -112.5f) { baseAnim = "aim_top"; flip = false; }
+		else if (angleDeg < -22.5f && angleDeg >= -67.5f) { baseAnim = "aim_top_right"; flip = false; }
+		
+		_animatedSprite.FlipH = flip;
+
+		if (_animatedSprite.SpriteFrames != null && _animatedSprite.SpriteFrames.HasAnimation(baseAnim))
+		{
+			if (isMoving) {
+				if (_animatedSprite.Animation != baseAnim || !_animatedSprite.IsPlaying()) _animatedSprite.Play(baseAnim);
+			} else {
+				if (_animatedSprite.Animation != baseAnim) _animatedSprite.Play(baseAnim);
+				_animatedSprite.Stop(); // Ensure only the idle frame is shown when stationary
+			}
+		}
+	}
+
+	private void Shoot()
+	{
+		// Note: Since CurrentWeapon will be "Melee" if unarmed, the 'HasGun' check already prevents this.
+		if (!HasGun || _isReloading || _currentAmmo <= 0 || _fireTimer < FireCooldown) return;
+
+		_fireTimer = 0f;
+		
+		Vector2 baseDirection = (GetGlobalMousePosition() - _gunFiring.GlobalPosition).Normalized();
+		
+		if (CurrentWeapon == "Shotgun")
+		{
+			// Shotgun firing: Fire multiple projectiles with a spread
+			float baseAngle = baseDirection.Angle();
+			// Convert spread angle from degrees to radians
+			float spreadRad = Mathf.DegToRad(ShotgunSpreadAngle);
+			float halfSpread = spreadRad / 2.0f;
+			
+			// Calculate the angle for the first pellet (far left of spread)
+			float startAngle = baseAngle - halfSpread;
+			// Calculate the rotation increment between pellets
+			float angleIncrement = ShotgunPellets > 1 ? spreadRad / (ShotgunPellets - 1) : 0f;
+
+			for (int i = 0; i < ShotgunPellets; i++)
+			{
+				float currentAngle = startAngle + (i * angleIncrement);
+				Vector2 pelletDirection = Vector2.FromAngle(currentAngle);
+				
+				// Explicitly use the ShotgunBulletScene (which we know is Area2D)
+				FireProjectile(ShotgunBulletScene, pelletDirection);
+			}
+		}
+		else
+		{
+			// Single shot firing for Pistol or Rifle
+			FireProjectile(BulletScene, baseDirection);
+		}
+		
+		_currentAmmo--;
+		UpdateUI();
+	}
+	
+	/// <summary>
+	/// Instantiates and launches a single projectile from the gun firing position.
+	/// </summary>
+	/// <param name="scene">The PackedScene for the bullet type (e.g., PistolBulletScene, RifleBulletScene).</param>
+	/// <param name="direction">The normalized direction vector for the projectile.</param>
+	private void FireProjectile(PackedScene scene, Vector2 direction)
+	{
+		if (scene == null) 
+		{
+			GD.PrintErr("FireProjectile called with null scene. Check Inspector assignment for the current weapon.");
+			return;
+		}
+		
+		if (scene.Instantiate() is Node newBullet)
+		{
+			// Case 1: Rifle Bullet (dedicated type)
+			if (newBullet is RifleBullet rifleBullet)
+			{
+				rifleBullet.GlobalPosition = _gunFiring.GlobalPosition;
+				rifleBullet.Direction = direction;
+				rifleBullet.Rotation = direction.Angle();
+				GetTree().CurrentScene.AddChild(rifleBullet);
+			}
+			// Case 2: Shotgun Bullet (Area2D based)
+			else if (newBullet is ShotgunBullet shotgunBullet)
+			{
+				shotgunBullet.GlobalPosition = _gunFiring.GlobalPosition;
+				shotgunBullet.Direction = direction;
+				shotgunBullet.Rotation = direction.Angle();
+				GetTree().CurrentScene.AddChild(shotgunBullet);
+			}
+			// Case 3: Standard Bullet (used for Pistol or other generic bullets)
+			else if (newBullet is Bullet standardBullet)
+			{
+				standardBullet.GlobalPosition = _gunFiring.GlobalPosition;
+				standardBullet.Direction = direction;
+				standardBullet.Rotation = direction.Angle();
+				GetTree().CurrentScene.AddChild(standardBullet);
+			}
+			else
+			{
+				GD.PrintErr($"FATAL: Instantiated scene {scene.ResourcePath} is not a recognized bullet type.");
+				newBullet.QueueFree();
+			}
+		}
+		else
+		{
+			GD.PrintErr($"FATAL SHOOT ERROR: Failed to instantiate BulletScene {scene.ResourcePath}!");
+		}
+	}
+
+
+	private async void Reload()
+	{
+		if (!HasGun || _isReloading || _currentAmmo == MaxAmmo) return;
+		
+		GD.Print("Reloading...");
+		_isReloading = true;
+		
+		await ToSignal(GetTree().CreateTimer(ReloadTime), "timeout");
+		
+		_currentAmmo = MaxAmmo;
+		_isReloading = false;
+		GD.Print("Reload Complete.");
+		
+		UpdateUI();
+	}
+	
+	public void GiveAmmo(int amount)
+	{
+		_currentAmmo = Mathf.Min(_currentAmmo + amount, MaxAmmo);
+		GD.Print($"Received {amount} ammo. Current ammo: {_currentAmmo}/{MaxAmmo}");
+		UpdateUI();
+	}
+}

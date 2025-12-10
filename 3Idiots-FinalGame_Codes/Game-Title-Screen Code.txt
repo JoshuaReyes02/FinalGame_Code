@@ -1,0 +1,27 @@
+using Godot;
+using System;
+
+public partial class Main : Node2D
+{
+private Label pressLabel;
+
+public override void _Ready()
+{
+	pressLabel = GetNode<Label>("PressAnyKeyToContinue");
+}
+
+// Detect any key or mouse press
+public override void _UnhandledInput(InputEvent @event)
+{
+	if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
+	{
+		GD.Print("Key pressed! Loading next scene...");
+		GetTree().ChangeSceneToFile("res://GameScene/mainmenu.tscn");
+	}
+	else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed)
+	{
+		GD.Print("Mouse clicked! Loading next scene...");
+		GetTree().ChangeSceneToFile("res://GameScene/mainmenu.tscn");
+	}
+}
+}

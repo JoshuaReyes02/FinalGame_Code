@@ -1,0 +1,57 @@
+using Godot;
+using System;
+
+public partial class Bullet : Area2D
+{
+	[Export] public float Speed { get; set; } = 800f;
+	[Export] public int Damage { get; set; } = 10;
+	
+	[Export] public float Lifetime { get; set; } = 3.0f; 
+
+	public Vector2 Direction { get; set; } = Vector2.Right;
+
+	private SceneTreeTimer _lifetimeTimer;
+
+	public override void _Ready()
+	{
+		// ★ NEW: Add the bullet to the group the boss looks for
+		AddToGroup("player_bullet"); 
+		
+		BodyEntered += OnBodyEntered;
+		
+		_lifetimeTimer = GetTree().CreateTimer(Lifetime);
+		_lifetimeTimer.Timeout += QueueFree; 
+	}
+	
+	/// <summary>
+	/// Allows other nodes (like the boss) to retrieve the bullet's current direction.
+	/// </summary>
+	public Vector2 GetDirection()
+	{
+		return Direction;
+	}
+
+	public override void _PhysicsProcess(double delta)
+	{
+		Position += Direction * Speed * (float)delta;
+	}
+
+	private void OnBodyEntered(Node body)
+	{
+		// 1. Check if the body is the Player, and ignore it.
+		if (body.IsInGroup("player"))
+		{
+			return; 
+		}
+		
+		// 2. Try to inflict damage
+		if (body.HasMethod("TakeDamage"))
+		{
+			body.Call("TakeDamage", Damage); 
+			GD.Print($"Bullet hit {body.Name} for {Damage} damage!");
+		}
+
+		// 3. Destroy the bullet after it hits an intended target
+		QueueFree();
+	}
+}

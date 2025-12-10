@@ -1,0 +1,189 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+
+public partial class Level10Part3 : Node2D 
+{
+	private const string PlayerGroupName = "player";
+	private const string SpawnMarkerName = "Level10Part3_Spawn";
+	
+	// --- Dungeon Fog Constants (BOSS LEVEL: CHAOS) ---
+	private const int FOG_PARTICLE_COUNT = 300;         
+	private const float FOG_SPEED_MIN = 80.0f;          // Faster minimum speed
+	private const float FOG_SPEED_MAX = 200.0f;         // MUCH faster max speed for chaos
+	private const float VERTICAL_JITTER = 40.0f;        // EXTREME vertical wavering
+	private const float FOG_OPACITY = 0.15f;            
+	private const float FOG_SIZE_MIN = 20.0f;           
+	private const float FOG_SIZE_MAX = 50.0f;           
+	// Murky, grey-green color
+	private Color FOG_COLOR = new Color(0.4f, 0.5f, 0.45f, FOG_OPACITY); 
+	
+	private RandomNumberGenerator _rng = new RandomNumberGenerator();
+	private Vector2 _viewportSize;
+
+	// Structure to hold particle data
+	private struct FogParticle
+	{
+		public Vector2 Position;
+		public float Size;
+		public float Speed;         
+		public float VerticalJitter; 
+		public float LifeTimer;      
+	}
+
+	private List<FogParticle> _particles = new List<FogParticle>();
+	private Node2D _drawingNode;
+
+	public override void _Ready()
+	{
+		GD.Print("Level 10 Part 3 (Boss) Loaded. Attempting to spawn player...");
+		
+		_rng.Seed = (ulong)DateTime.Now.Ticks;
+		_viewportSize = GetViewportRect().Size;
+		
+		// 1. --- Player Spawning Logic ---
+		SpawnPlayer();
+
+		// 2. --- Chaotic Fog Particle Logic ---
+		InitializeDungeonFog();
+	}
+	
+	// --------------------------------------------------------------------------
+	// MANUAL MOVEMENT LOGIC (Fog)
+	// --------------------------------------------------------------------------
+
+	public override void _Process(double delta)
+	{
+		// 1. Update Particle Positions
+		for (int i = 0; i < _particles.Count; i++)
+		{
+			FogParticle p = _particles[i];
+			float dt = (float)delta;
+			
+			// Apply fast horizontal movement (chaotic drift)
+			p.Position.X += p.Speed * dt;
+			
+			// Apply chaotic vertical jitter (violent wavering)
+			p.Position.Y += p.VerticalJitter * dt;
+			
+			// Periodically reset vertical jitter for chaotic movement
+			if (_rng.Randf() < 0.1f) // Increased chance to reset jitter
+			{
+				p.VerticalJitter = _rng.RandfRange(-VERTICAL_JITTER, VERTICAL_JITTER);
+			}
+
+			// --- Boundary Check: Wrap to the left side if it exits right ---
+			if (p.Position.X > _viewportSize.X + p.Size)
+			{
+				p.Position = ResetFogPosition(p.Size);
+			}
+			// Keep particles constrained vertically
+			if (p.Position.Y > _viewportSize.Y) p.Position.Y = -p.Size;
+			if (p.Position.Y < -p.Size) p.Position.Y = _viewportSize.Y;
+
+			_particles[i] = p; 
+		}
+		
+		// 2. Redraw the particles on the screen
+		if (_drawingNode != null)
+		{
+			_drawingNode.QueueRedraw();
+		}
+	}
+	
+	// --------------------------------------------------------------------------
+	// PLAYER SPAWN LOGIC (Unchanged)
+	// --------------------------------------------------------------------------
+
+	private void SpawnPlayer()
+	{
+		Node2D player = null; 
+
+		foreach (Node node in GetTree().Root.GetChildren())
+		{
+			if (node.IsInGroup(PlayerGroupName) && node.Name == "CharacterNode" && node is Node2D playerNode)
+			{
+				player = playerNode;
+				break;
+			}
+		}
+
+		if (player == null)
+		{
+			GD.PrintErr("Could not find player in the scene tree!");
+			return;
+		}
+
+		var spawnPoint = GetNodeOrNull<Marker2D>(SpawnMarkerName);
+
+		if (spawnPoint != null)
+		{
+			player.GlobalPosition = spawnPoint.GlobalPosition;
+			GD.Print($"Player successfully spawned at: {player.GlobalPosition}");
+		}
+		else
+		{
+			GD.PrintErr($"Could not find spawn marker: {SpawnMarkerName}. Player may be stuck at (0, 0).");
+		}
+	}
+	
+	// --------------------------------------------------------------------------
+	// DUNGEON FOG DRAWING LOGIC
+	// --------------------------------------------------------------------------
+
+	private void InitializeDungeonFog()
+	{
+		// 1. Setup the CanvasLayer and the Drawing Node
+		CanvasLayer fogLayer = new CanvasLayer();
+		fogLayer.Layer = 100; 
+		AddChild(fogLayer);
+
+		_drawingNode = new Node2D();
+		_drawingNode.Name = "FogDrawingNode";
+		_drawingNode.SetProcessMode(Node.ProcessModeEnum.Always); 
+		_drawingNode.Draw += OnFogDraw; 
+		fogLayer.AddChild(_drawingNode);
+		
+		// 2. Populate the particle data list
+		for (int i = 0; i < FOG_PARTICLE_COUNT; i++)
+		{
+			FogParticle p = new FogParticle();
+			p.Size = _rng.RandfRange(FOG_SIZE_MIN, FOG_SIZE_MAX);
+			p.Speed = _rng.RandfRange(FOG_SPEED_MIN, FOG_SPEED_MAX);
+			
+			// Initial random setup
+			p.Position = ResetFogPosition(p.Size, true); 
+			p.VerticalJitter = _rng.RandfRange(-VERTICAL_JITTER, VERTICAL_JITTER);
+			
+			_particles.Add(p);
+		}
+		
+		GD.Print($"Initialized {FOG_PARTICLE_COUNT} procedural dungeon fog particles.");
+	}
+
+	/// <summary>
+	/// Custom draw function executed when _drawingNode.QueueRedraw() is called.
+	/// </summary>
+	private void OnFogDraw()
+	{
+		foreach (var p in _particles)
+		{
+			// Draw a large circle to represent a cloud/mist particle
+			_drawingNode.DrawCircle(p.Position, p.Size / 2, FOG_COLOR);
+		}
+	}
+	
+	/// <summary>
+	/// Calculates a new starting position for a fog particle.
+	/// </summary>
+	private Vector2 ResetFogPosition(float size, bool initialPlacement = false)
+	{
+		// Start just off the left side of the screen
+		float startX = initialPlacement ? _rng.RandfRange(0, _viewportSize.X) : _rng.RandfRange(-size, -10.0f);
+		
+		// Start anywhere vertically
+		float startY = _rng.RandfRange(0, _viewportSize.Y); 
+
+		return new Vector2(startX, startY);
+	}
+}
